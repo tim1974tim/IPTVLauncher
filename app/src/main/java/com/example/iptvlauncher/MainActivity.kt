@@ -1,0 +1,250 @@
+package com.example.iptvlauncher
+
+import android.content.Intent
+import android.os.Bundle
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.View
+import android.widget.*
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import kotlin.concurrent.thread
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var root: FrameLayout
+    private lateinit var playerView: PlayerView
+    private lateinit var browser: LinearLayout
+    private lateinit var channelList: LinearLayout
+    private lateinit var urlInput: EditText
+    private var setupWrapper: FrameLayout? = null
+    private lateinit var player: ExoPlayer
+    private val channels = mutableListOf<TvChannel>()
+    private var groups = listOf<String>()
+    private var groupIndex = 0
+    private var selectedChannel = 0
+    private var browserVisible = false
+    private val prefs by lazy { getSharedPreferences("iptv", MODE_PRIVATE) }
+
+    private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            prefs.edit().putString("playlist_uri", uri.toString()).remove("playlist_url").apply()
+            thread {
+                val data = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                runOnUiThread { if (data != null) loadPlaylist(data) else toast("Не удалось открыть файл") }
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.decorView.systemUiVisibility = 5894 or 1024 or 512
+        player = ExoPlayer.Builder(this).build()
+        root = FrameLayout(this).apply { setBackgroundColor(0xFF090B10.toInt()) }
+        playerView = PlayerView(this).apply {
+            player = this@MainActivity.player
+            useController = true
+            setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+        }
+        root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        setContentView(root)
+
+        val savedUrl = prefs.getString("playlist_url", null)
+        val savedUri = prefs.getString("playlist_uri", null)
+        when {
+            savedUrl != null -> fetchPlaylist(savedUrl, prefs.getInt("last_channel", -1))
+            savedUri != null -> reopenSavedFile(savedUri)
+            else -> showSetup()
+        }
+    }
+
+    private fun showSetup() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(48, 32, 48, 32)
+            setBackgroundColor(0xFF10141D.toInt())
+        }
+        panel.addView(label("IPTV Launcher", 30f))
+        panel.addView(label("Добавьте M3U / M3U8 плейлист", 18f))
+        urlInput = EditText(this).apply {
+            hint = "https://example.com/playlist.m3u"
+            setSingleLine(true)
+            setTextColor(-1)
+            setHintTextColor(0xFF8993A4.toInt())
+        }
+        panel.addView(urlInput, LinearLayout.LayoutParams(680, 58))
+        panel.addView(button("Загрузить по URL") {
+            val url = urlInput.text.toString().trim()
+            if (url.isNotEmpty()) {
+                prefs.edit().putString("playlist_url", url).remove("playlist_uri").apply()
+                fetchPlaylist(url, -1)
+            }
+        })
+        panel.addView(button("Открыть файл M3U") { openFile.launch(arrayOf("*/*")) })
+        val wrapper = FrameLayout(this)
+        wrapper.addView(panel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        setupWrapper = wrapper
+        root.addView(wrapper, FrameLayout.LayoutParams(-1, -1))
+        urlInput.requestFocus()
+    }
+
+    private fun reopenSavedFile(uriText: String) {
+        thread {
+            try {
+                val uri = android.net.Uri.parse(uriText)
+                val data = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                runOnUiThread {
+                    if (!data.isNullOrBlank()) {
+                        loadPlaylist(data)
+                        val index = prefs.getInt("last_channel", 0).coerceIn(0, channels.lastIndex)
+                        playChannel(index)
+                    } else {
+                        toast("Не удалось восстановить плейлист. Выберите файл ещё раз.")
+                        showSetup()
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    toast("Нет доступа к сохранённому файлу. Выберите плейлист ещё раз.")
+                    prefs.edit().remove("playlist_uri").apply()
+                    showSetup()
+                }
+            }
+        }
+    }
+
+    private fun fetchPlaylist(url: String, restoreIndex: Int) {
+        toast("Загрузка плейлиста…")
+        thread {
+            try {
+                val response = OkHttpClient().newCall(Request.Builder().url(url).build()).execute()
+                val data = response.body?.string().orEmpty()
+                runOnUiThread {
+                    if (response.isSuccessful && data.isNotBlank()) {
+                        loadPlaylist(data)
+                        val index = if (restoreIndex in channels.indices) restoreIndex else 0
+                        playChannel(index)
+                    } else toast("Не удалось загрузить плейлист")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { toast("Ошибка загрузки: ${e.localizedMessage ?: "проверьте URL"}") }
+            }
+        }
+    }
+
+    private fun loadPlaylist(data: String) {
+        val parsed = M3uParser.parse(data)
+        if (parsed.isEmpty()) { toast("В плейлисте не найдены каналы"); return }
+        setupWrapper?.let { root.removeView(it) }
+        setupWrapper = null
+        channels.clear()
+        channels.addAll(parsed)
+        groups = channels.map { it.group }.distinct()
+        groupIndex = 0
+        selectedChannel = 0
+        playChannel(0)
+        toast("Загружено каналов: ${channels.size}. OK — открыть список")
+    }
+
+    private fun playChannel(index: Int) {
+        if (index !in channels.indices) return
+        selectedChannel = index
+        prefs.edit().putInt("last_channel", index).apply()
+        player.setMediaItem(MediaItem.fromUri(channels[index].url))
+        player.prepare()
+        player.playWhenReady = true
+        closeBrowser()
+    }
+
+    private fun showBrowser() {
+        if (channels.isEmpty()) return
+        browserVisible = true
+        browser = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(30, 24, 30, 24)
+            setBackgroundColor(0xF00B0E14.toInt())
+        }
+        val categories = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        categories.addView(label("КАТЕГОРИИ", 16f))
+        groups.forEachIndexed { index, group ->
+            categories.addView(button((if (index == groupIndex) "●  " else "   ") + group) {
+                groupIndex = index
+                selectedChannel = channels.indexOfFirst { it.group == group }.coerceAtLeast(0)
+                refreshChannels()
+            })
+        }
+        channelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        browser.addView(categories, LinearLayout.LayoutParams(340, -1))
+        browser.addView(channelList, LinearLayout.LayoutParams(0, -1, 1f))
+        root.addView(browser, FrameLayout.LayoutParams(-1, -1))
+        refreshChannels()
+    }
+
+    private fun refreshChannels() {
+        if (!browserVisible) return
+        channelList.removeAllViews()
+        channelList.addView(label("КАНАЛЫ  •  ${groups[groupIndex]}", 20f))
+        val indices = channels.indices.filter { channels[it].group == groups[groupIndex] }
+        indices.forEach { index ->
+            channelList.addView(button((if (index == selectedChannel) "▶  " else "   ") + channels[index].name) {
+                playChannel(index)
+            })
+        }
+    }
+
+    private fun closeBrowser() {
+        if (browserVisible) root.removeView(browser)
+        browserVisible = false
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (!browserVisible && keyCode == KeyEvent.KEYCODE_DPAD_CENTER && channels.isNotEmpty()) {
+            showBrowser()
+            return true
+        }
+        if (browserVisible) {
+            val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
+            val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> { selectedChannel = visible[(position - 1).coerceAtLeast(0)]; refreshChannels(); return true }
+                KeyEvent.KEYCODE_DPAD_DOWN -> { selectedChannel = visible[(position + 1).coerceAtMost(visible.lastIndex)]; refreshChannels(); return true }
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    groupIndex = (groupIndex - 1).coerceAtLeast(0)
+                    selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
+                    refreshChannels(); return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    groupIndex = (groupIndex + 1).coerceAtMost(groups.lastIndex)
+                    selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
+                    refreshChannels(); return true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { playChannel(selectedChannel); return true }
+                KeyEvent.KEYCODE_BACK -> { closeBrowser(); return true }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun label(value: String, size: Float) = TextView(this).apply {
+        text = value; textSize = size; setTextColor(-1); setPadding(12, 12, 12, 12)
+    }
+
+    private fun button(value: String, action: () -> Unit) = Button(this).apply {
+        text = value; isFocusable = true; setTextColor(-1)
+        setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
+        setOnClickListener { action() }
+    }
+
+    private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_LONG).show()
+
+    override fun onDestroy() {
+        player.release()
+        super.onDestroy()
+    }
+}
