@@ -334,8 +334,9 @@ class MainActivity : AppCompatActivity() {
             val keyCode = event.keyCode
             // На экране первоначальной настройки явно переводим фокус между полем URL и кнопками.
             if (setupWrapper != null) {
-                // Не полагаемся на hasFocus(): некоторые ТВ-пульты/прошивки
-                // передают DPAD иначе, поэтому ведём фокус по явному индексу.
+                // На экране настройки вручную обрабатываем только стрелки.
+                // OK/ENTER обязательно передаём активному EditText/Button,
+                // иначе кнопка загрузки получает фокус, но не нажимается.
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_DOWN -> {
                         setupFocusIndex = (setupFocusIndex + 1).coerceAtMost(2)
@@ -355,6 +356,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         return true
                     }
+                    else -> return super.dispatchKeyEvent(event)
                 }
             }
             if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE ||
