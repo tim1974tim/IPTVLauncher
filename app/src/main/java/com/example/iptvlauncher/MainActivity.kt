@@ -20,6 +20,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var browser: LinearLayout
     private lateinit var channelList: LinearLayout
+    private lateinit var playbackBar: LinearLayout
     private lateinit var urlInput: EditText
     private var setupWrapper: FrameLayout? = null
     private lateinit var player: ExoPlayer
@@ -55,10 +56,17 @@ class MainActivity : AppCompatActivity() {
         root = FrameLayout(this).apply { setBackgroundColor(0xFF090B10.toInt()) }
         playerView = PlayerView(this).apply {
             player = this@MainActivity.player
-            useController = true
+            useController = false
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        playbackBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setBackgroundColor(0xD9000000.toInt())
+            visibility = View.GONE
+        }
+        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(76), Gravity.BOTTOM))
         setContentView(root)
 
         val savedUrl = prefs.getString("playlist_url", null)
@@ -219,22 +227,57 @@ class MainActivity : AppCompatActivity() {
         val index = restoreIndex.takeIf { it in channels.indices } ?: 0
         selectedChannel = index
         playChannel(index)
-        toast("Загружено каналов: ${channels.size}. OK — открыть список")
+        updatePlaybackBar()
+        toast("Загружено каналов: ${channels.size}")
     }
 
     private fun playChannel(index: Int) {
         if (index !in channels.indices) return
         selectedChannel = index
+        groupIndex = groups.indexOf(channels[index].group).coerceAtLeast(0)
         prefs.edit().putInt("last_channel", index).apply()
         player.setMediaItem(MediaItem.fromUri(channels[index].url))
         player.prepare()
         player.playWhenReady = true
         closeBrowser()
+        updatePlaybackBar()
+    }
+
+    private fun updatePlaybackBar() {
+        if (channels.isEmpty()) return
+        playbackBar.removeAllViews()
+        val category = groups.getOrNull(groupIndex) ?: "Без категории"
+        val inGroup = channels.indices.filter { channels[it].group == category }
+        val position = inGroup.indexOf(selectedChannel).coerceAtLeast(0)
+        val previous = inGroup.getOrNull(position - 1)?.let { channels[it].name } ?: ""
+        val current = channels.getOrNull(selectedChannel)?.name ?: ""
+        val next = inGroup.getOrNull(position + 1)?.let { channels[it].name } ?: ""
+        playbackBar.addView(label("◀  $category  ▶", 14f))
+        playbackBar.addView(label(listOf(previous, "▶ $current", next).filter { it.isNotBlank() }.joinToString("     •     "), 16f))
+        playbackBar.visibility = if (browserVisible) View.GONE else View.VISIBLE
+    }
+
+    private fun changeChannelInGroup(direction: Int) {
+        if (channels.isEmpty()) return
+        val category = groups.getOrNull(groupIndex) ?: return
+        val indices = channels.indices.filter { channels[it].group == category }
+        if (indices.isEmpty()) return
+        val position = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
+        val nextPosition = (position + direction).coerceIn(0, indices.lastIndex)
+        playChannel(indices[nextPosition])
+    }
+
+    private fun changeGroup(direction: Int) {
+        if (groups.isEmpty()) return
+        groupIndex = (groupIndex + direction).coerceIn(0, groups.lastIndex)
+        selectFirstChannelInGroup()
+        playChannel(selectedChannel)
     }
 
     private fun showBrowser() {
         if (channels.isEmpty() || browserVisible) return
         browserVisible = true
+        playbackBar.visibility = View.GONE
         browser = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(30, 24, 30, 24)
@@ -271,6 +314,7 @@ class MainActivity : AppCompatActivity() {
     private fun closeBrowser() {
         if (browserVisible) root.removeView(browser)
         browserVisible = false
+        updatePlaybackBar()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -312,19 +356,11 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                        if (channels.isNotEmpty()) { showBrowser(); return true }
-                    }
-                    KeyEvent.KEYCODE_DPAD_UP -> {
-                        if (channels.isNotEmpty()) {
-                            playChannel((selectedChannel - 1).coerceAtLeast(0)); return true
-                        }
-                    }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                        if (channels.isNotEmpty()) {
-                            playChannel((selectedChannel + 1).coerceAtMost(channels.lastIndex)); return true
-                        }
-                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> { changeChannelInGroup(-1); return true }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { changeChannelInGroup(1); return true }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> { changeGroup(-1); return true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { changeGroup(1); return true }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> return true
                 }
             }
         }
