@@ -45,13 +45,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.decorView.systemUiVisibility = 5894 or 1024 or 512
         player = ExoPlayer.Builder(this).build()
-        player.addListener(object : androidx.media3.common.Player.Listener {
-            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                runOnUiThread {
-                    toast("Ошибка воспроизведения: ${error.errorCodeName}")
-                }
-            }
-        })
         root = FrameLayout(this).apply { setBackgroundColor(0xFF090B10.toInt()) }
         playerView = PlayerView(this).apply {
             player = this@MainActivity.player
