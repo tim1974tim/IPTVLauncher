@@ -95,14 +95,34 @@ class MainActivity : AppCompatActivity() {
         panel.addView(urlInput, LinearLayout.LayoutParams(dp(620), dp(68)).apply {
             bottomMargin = dp(12)
         })
-        panel.addView(button("Загрузить по URL") {
+        val loadButton = button("Загрузить по URL", focusable = true) {
             val url = urlInput.text.toString().trim()
             if (url.isNotEmpty()) {
                 prefs.edit().putString("playlist_url", url).remove("playlist_uri").apply()
                 fetchPlaylist(url, -1)
+            } else {
+                toast("Сначала введите адрес плейлиста")
+                urlInput.requestFocus()
             }
-        })
-        panel.addView(button("Открыть файл M3U") { openFile.launch(arrayOf("*/*")) })
+        }
+        val fileButton = button("Открыть файл M3U", focusable = true) {
+            openFile.launch(arrayOf("*/*"))
+        }
+        urlInput.id = View.generateViewId()
+        loadButton.id = View.generateViewId()
+        fileButton.id = View.generateViewId()
+        urlInput.nextFocusDownId = loadButton.id
+        loadButton.nextFocusUpId = urlInput.id
+        loadButton.nextFocusDownId = fileButton.id
+        fileButton.nextFocusUpId = loadButton.id
+        urlInput.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                loadButton.requestFocus()
+                true
+            } else false
+        }
+        panel.addView(loadButton)
+        panel.addView(fileButton)
         val wrapper = FrameLayout(this)
         wrapper.addView(panel, FrameLayout.LayoutParams(
             minOf(resources.displayMetrics.widthPixels - dp(48), dp(760)),
@@ -328,8 +348,8 @@ class MainActivity : AppCompatActivity() {
         text = value; textSize = size; setTextColor(-1); setPadding(12, 12, 12, 12)
     }
 
-    private fun button(value: String, action: () -> Unit) = Button(this).apply {
-        text = value; isFocusable = false; isFocusableInTouchMode = false
+    private fun button(value: String, focusable: Boolean = false, action: () -> Unit) = Button(this).apply {
+        text = value; isFocusable = focusable; isFocusableInTouchMode = focusable
         minHeight = dp(54); setTextColor(-1)
         setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
         setOnClickListener { action() }
