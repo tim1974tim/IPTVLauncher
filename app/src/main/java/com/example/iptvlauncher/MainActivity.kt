@@ -45,6 +45,13 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.decorView.systemUiVisibility = 5894 or 1024 or 512
         player = ExoPlayer.Builder(this).build()
+        player.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                runOnUiThread {
+                    toast("Ошибка воспроизведения: ${error.errorCodeName}")
+                }
+            }
+        })
         root = FrameLayout(this).apply { setBackgroundColor(0xFF090B10.toInt()) }
         playerView = PlayerView(this).apply {
             player = this@MainActivity.player
@@ -206,7 +213,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showBrowser() {
-        if (channels.isEmpty()) return
+        if (channels.isEmpty() || browserVisible) return
         browserVisible = true
         browser = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -218,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         groups.forEachIndexed { index, group ->
             categories.addView(button((if (index == groupIndex) "●  " else "   ") + group) {
                 groupIndex = index
-                selectedChannel = channels.indexOfFirst { it.group == group }.coerceAtLeast(0)
+                selectFirstChannelInGroup()
                 refreshChannels()
             })
         }
@@ -246,32 +253,75 @@ class MainActivity : AppCompatActivity() {
         browserVisible = false
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (!browserVisible && keyCode == KeyEvent.KEYCODE_DPAD_CENTER && channels.isNotEmpty()) {
-            showBrowser()
-            return true
-        }
-        if (browserVisible) {
-            val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
-            val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
-            when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_UP -> { selectedChannel = visible[(position - 1).coerceAtLeast(0)]; refreshChannels(); return true }
-                KeyEvent.KEYCODE_DPAD_DOWN -> { selectedChannel = visible[(position + 1).coerceAtMost(visible.lastIndex)]; refreshChannels(); return true }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    groupIndex = (groupIndex - 1).coerceAtLeast(0)
-                    selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
-                    refreshChannels(); return true
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val keyCode = event.keyCode
+            if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_B) {
+                if (channels.isNotEmpty()) {
+                    if (browserVisible) closeBrowser() else showBrowser()
+                    return true
                 }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    groupIndex = (groupIndex + 1).coerceAtMost(groups.lastIndex)
-                    selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
-                    refreshChannels(); return true
+                return true
+            }
+            if (browserVisible) {
+                val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
+                if (visible.isNotEmpty()) {
+                    val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
+                    when (keyCode) {
+                        KeyEvent.KEYCODE_DPAD_UP -> {
+                            selectedChannel = visible[(position - 1).coerceAtLeast(0)]
+                            refreshChannels(); return true
+                        }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            selectedChannel = visible[(position + 1).coerceAtMost(visible.lastIndex)]
+                            refreshChannels(); return true
+                        }
+                        KeyEvent.KEYCODE_DPAD_LEFT -> {
+                            groupIndex = (groupIndex - 1).coerceAtLeast(0)
+                            selectFirstChannelInGroup(); refreshChannels(); return true
+                        }
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                            groupIndex = (groupIndex + 1).coerceAtMost(groups.lastIndex)
+                            selectFirstChannelInGroup(); refreshChannels(); return true
+                        }
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                            playChannel(selectedChannel); return true
+                        }
+                    }
                 }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { playChannel(selectedChannel); return true }
-                KeyEvent.KEYCODE_BACK -> { closeBrowser(); return true }
+            } else {
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        if (channels.isNotEmpty()) { showBrowser(); return true }
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        if (channels.isNotEmpty()) {
+                            playChannel((selectedChannel - 1).coerceAtLeast(0)); return true
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (channels.isNotEmpty()) {
+                            playChannel((selectedChannel + 1).coerceAtMost(channels.lastIndex)); return true
+                        }
+                    }
+                }
             }
         }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
+    }
+
+    @Deprecated("Deprecated in Android")
+    override fun onBackPressed() {
+        if (channels.isNotEmpty()) {
+            if (browserVisible) closeBrowser() else showBrowser()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    private fun selectFirstChannelInGroup() {
+        selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
     }
 
     private fun label(value: String, size: Float) = TextView(this).apply {
@@ -279,7 +329,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun button(value: String, action: () -> Unit) = Button(this).apply {
-        text = value; isFocusable = true; minHeight = dp(54); setTextColor(-1)
+        text = value; isFocusable = false; isFocusableInTouchMode = false
+        minHeight = dp(54); setTextColor(-1)
         setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
         setOnClickListener { action() }
     }
