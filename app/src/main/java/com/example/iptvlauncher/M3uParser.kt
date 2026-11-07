@@ -9,15 +9,14 @@ data class TvChannel(
 )
 
 object M3uParser {
-    fun parse(text: String, maxChannels: Int = 12000): List<TvChannel> {
+    fun parse(text: String): List<TvChannel> {
         val result = mutableListOf<TvChannel>()
         var name: String? = null
         var group = "Без категории"
         var logo: String? = null
         var tvgId: String? = null
 
-        for (raw in text.removePrefix("\uFEFF").lineSequence()) {
-            if (result.size >= maxChannels) break
+        text.removePrefix("\uFEFF").lineSequence().forEach { raw ->
             val line = raw.trim().removePrefix("\uFEFF")
             when {
                 line.startsWith("#EXTINF", ignoreCase = true) -> {
