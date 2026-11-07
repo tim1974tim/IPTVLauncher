@@ -150,10 +150,23 @@ class MainActivity : AppCompatActivity() {
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
                     if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
                     val body = response.body ?: throw java.io.IOException("Пустой ответ сервера")
-                    if (body.contentLength() > 30L * 1024L * 1024L) throw java.io.IOException("Плейлист больше 30 МБ")
-                    body.string()
+                    val maxBytes = 10L * 1024L * 1024L
+                    if (body.contentLength() > maxBytes) throw java.io.IOException("Плейлист больше 10 МБ. Используйте более компактный список")
+                    body.byteStream().use { input ->
+                        val output = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(16 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > maxBytes) throw java.io.IOException("Плейлист больше 10 МБ. Используйте более компактный список")
+                            output.write(buffer, 0, count)
+                        }
+                        output.toString(Charsets.UTF_8.name())
+                    }
                 }
-                val parsed = M3uParser.parse(data)
+                val parsed = M3uParser.parse(data, maxChannels = 12000)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     if (parsed.isEmpty()) toast("В ответе сервера не найдены каналы M3U")
@@ -191,8 +204,10 @@ class MainActivity : AppCompatActivity() {
         groupIndex = 0
         val index = restoreIndex.takeIf { it in channels.indices } ?: 0
         selectedChannel = index
-        playChannel(index)
-        toast("Загружено каналов: ${channels.size}. OK — открыть список")
+        // Не запускаем видеопоток автоматически: сначала проверяем, что список
+        // успешно загружен и отображается. Канал запускается выбором пользователя.
+        showBrowser()
+        toast("Загружено каналов: ${channels.size}. Выберите канал для просмотра")
     }
 
     private fun playChannel(index: Int) {
