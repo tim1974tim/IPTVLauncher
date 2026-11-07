@@ -22,6 +22,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var channelList: LinearLayout
     private lateinit var playbackBar: LinearLayout
     private lateinit var urlInput: EditText
+    private var setupLoadButton: Button? = null
+    private var setupFileButton: Button? = null
     private var setupWrapper: FrameLayout? = null
     private lateinit var player: ExoPlayer
     private val channels = mutableListOf<TvChannel>()
@@ -116,6 +118,8 @@ class MainActivity : AppCompatActivity() {
         val fileButton = button("Открыть файл M3U", focusable = true) {
             openFile.launch(arrayOf("*/*"))
         }
+        setupLoadButton = loadButton
+        setupFileButton = fileButton
         urlInput.id = View.generateViewId()
         loadButton.id = View.generateViewId()
         fileButton.id = View.generateViewId()
@@ -220,6 +224,8 @@ class MainActivity : AppCompatActivity() {
         if (parsed.isEmpty()) { toast("В плейлисте не найдены каналы"); return }
         setupWrapper?.let { root.removeView(it) }
         setupWrapper = null
+        setupLoadButton = null
+        setupFileButton = null
         channels.clear()
         channels.addAll(parsed)
         groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
@@ -320,6 +326,27 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val keyCode = event.keyCode
+            // На экране первоначальной настройки явно переводим фокус между полем URL и кнопками.
+            if (setupWrapper != null) {
+                val load = setupLoadButton
+                val file = setupFileButton
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        when {
+                            urlInput.hasFocus() -> load?.requestFocus()
+                            load?.hasFocus() == true -> file?.requestFocus()
+                        }
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        when {
+                            file?.hasFocus() == true -> load?.requestFocus()
+                            load?.hasFocus() == true -> urlInput.requestFocus()
+                        }
+                        return true
+                    }
+                }
+            }
             if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_B) {
                 if (channels.isNotEmpty()) {
