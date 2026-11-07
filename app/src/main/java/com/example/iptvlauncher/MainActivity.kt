@@ -67,7 +67,7 @@ class MainActivity : AppCompatActivity() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(48, 32, 48, 32)
+            setPadding(dp(28), dp(24), dp(28), dp(24))
             setBackgroundColor(0xFF10141D.toInt())
         }
         panel.addView(label("IPTV Launcher", 30f))
@@ -75,10 +75,19 @@ class MainActivity : AppCompatActivity() {
         urlInput = EditText(this).apply {
             hint = "https://example.com/playlist.m3u"
             setSingleLine(true)
+            textSize = 16f
             setTextColor(-1)
             setHintTextColor(0xFF8993A4.toInt())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            minHeight = dp(64)
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setBackgroundColor(0xFF202A3A.toInt())
         }
-        panel.addView(urlInput, LinearLayout.LayoutParams(680, 58))
+        panel.addView(urlInput, LinearLayout.LayoutParams(dp(620), dp(68)).apply {
+            bottomMargin = dp(12)
+        })
         panel.addView(button("Загрузить по URL") {
             val url = urlInput.text.toString().trim()
             if (url.isNotEmpty()) {
@@ -88,7 +97,11 @@ class MainActivity : AppCompatActivity() {
         })
         panel.addView(button("Открыть файл M3U") { openFile.launch(arrayOf("*/*")) })
         val wrapper = FrameLayout(this)
-        wrapper.addView(panel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        wrapper.addView(panel, FrameLayout.LayoutParams(
+            minOf(resources.displayMetrics.widthPixels - dp(48), dp(760)),
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
         setupWrapper = wrapper
         root.addView(wrapper, FrameLayout.LayoutParams(-1, -1))
         urlInput.requestFocus()
@@ -120,35 +133,65 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchPlaylist(url: String, restoreIndex: Int) {
+        val parsedUrl = url.trim()
+        if (!parsedUrl.startsWith("http://", true) && !parsedUrl.startsWith("https://", true)) {
+            toast("Введите корректный адрес, начинающийся с http:// или https://")
+            return
+        }
         toast("Загрузка плейлиста…")
-        thread {
+        thread(name = "playlist-download") {
             try {
-                val response = OkHttpClient().newCall(Request.Builder().url(url).build()).execute()
-                val data = response.body?.string().orEmpty()
+                val client = OkHttpClient.Builder()
+                    .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
+                    .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val data = client.newCall(Request.Builder().url(parsedUrl)
+                    .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
+                    if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
+                    val body = response.body ?: throw java.io.IOException("Пустой ответ сервера")
+                    if (body.contentLength() > 30L * 1024L * 1024L) throw java.io.IOException("Плейлист больше 30 МБ")
+                    body.string()
+                }
+                val parsed = M3uParser.parse(data)
                 runOnUiThread {
-                    if (response.isSuccessful && data.isNotBlank()) {
-                        loadPlaylist(data)
-                        val index = if (restoreIndex in channels.indices) restoreIndex else 0
-                        playChannel(index)
-                    } else toast("Не удалось загрузить плейлист")
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (parsed.isEmpty()) toast("В ответе сервера не найдены каналы M3U")
+                    else {
+                        prefs.edit().putString("playlist_url", parsedUrl).remove("playlist_uri").apply()
+                        applyPlaylist(parsed, restoreIndex)
+                    }
                 }
             } catch (e: Exception) {
-                runOnUiThread { toast("Ошибка загрузки: ${e.localizedMessage ?: "проверьте URL"}") }
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) toast("Не удалось загрузить плейлист: ${e.message ?: "ошибка сети"}")
+                }
             }
         }
     }
 
     private fun loadPlaylist(data: String) {
-        val parsed = M3uParser.parse(data)
+        thread(name = "playlist-parse") {
+            val parsed = M3uParser.parse(data)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (parsed.isEmpty()) toast("В плейлисте не найдены каналы")
+                else applyPlaylist(parsed, 0)
+            }
+        }
+    }
+
+    private fun applyPlaylist(parsed: List<TvChannel>, restoreIndex: Int) {
         if (parsed.isEmpty()) { toast("В плейлисте не найдены каналы"); return }
         setupWrapper?.let { root.removeView(it) }
         setupWrapper = null
         channels.clear()
         channels.addAll(parsed)
-        groups = channels.map { it.group }.distinct()
+        groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
         groupIndex = 0
-        selectedChannel = 0
-        playChannel(0)
+        val index = restoreIndex.takeIf { it in channels.indices } ?: 0
+        selectedChannel = index
+        playChannel(index)
         toast("Загружено каналов: ${channels.size}. OK — открыть список")
     }
 
@@ -236,10 +279,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun button(value: String, action: () -> Unit) = Button(this).apply {
-        text = value; isFocusable = true; setTextColor(-1)
+        text = value; isFocusable = true; minHeight = dp(54); setTextColor(-1)
         setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
         setOnClickListener { action() }
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_LONG).show()
 

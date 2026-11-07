@@ -11,30 +11,57 @@ data class TvChannel(
 object M3uParser {
     fun parse(text: String): List<TvChannel> {
         val result = mutableListOf<TvChannel>()
-        var name = ""
+        var name: String? = null
         var group = "Без категории"
         var logo: String? = null
         var tvgId: String? = null
-        text.lineSequence().forEach { raw ->
-            val line = raw.trim()
-            if (line.startsWith("#EXTINF", true)) {
-                name = line.substringAfterLast(",").trim().ifBlank { "Канал ${result.size + 1}" }
-                group = attr(line, "group-title") ?: "Без категории"
-                logo = attr(line, "tvg-logo")
-                tvgId = attr(line, "tvg-id")
-            } else if (line.isNotEmpty() && !line.startsWith("#")) {
-                result += TvChannel(name, line, group, logo, tvgId)
-                name = ""
-                group = "Без категории"
-                logo = null
-                tvgId = null
+
+        text.removePrefix("\uFEFF").lineSequence().forEach { raw ->
+            val line = raw.trim().removePrefix("\uFEFF")
+            when {
+                line.startsWith("#EXTINF", ignoreCase = true) -> {
+                    val comma = findTitleSeparator(line)
+                    val info = if (comma >= 0) line.substring(0, comma) else line
+                    name = if (comma >= 0) line.substring(comma + 1).trim() else null
+                    group = attr(info, "group-title")?.takeIf { it.isNotBlank() } ?: "Без категории"
+                    logo = attr(info, "tvg-logo")
+                    tvgId = attr(info, "tvg-id")
+                }
+                line.isNotEmpty() && !line.startsWith("#") -> {
+                    if (line.startsWith("http://", true) || line.startsWith("https://", true) ||
+                        line.startsWith("rtmp://", true) || line.startsWith("rtsp://", true)) {
+                        result += TvChannel(
+                            name = name?.takeIf { it.isNotBlank() } ?: "Канал ${result.size + 1}",
+                            url = line,
+                            group = group,
+                            logo = logo,
+                            tvgId = tvgId
+                        )
+                    }
+                    name = null
+                    group = "Без категории"
+                    logo = null
+                    tvgId = null
+                }
             }
         }
         return result
     }
 
+    private fun findTitleSeparator(line: String): Int {
+        var quoted = false
+        var quote = ' '
+        for (i in line.indices) {
+            val c = line[i]
+            if ((c == '"' || c == '\'') && (!quoted || c == quote)) {
+                if (quoted) quoted = false else { quoted = true; quote = c }
+            } else if (c == ',' && !quoted) return i
+        }
+        return -1
+    }
+
     private fun attr(line: String, key: String): String? {
-        val regex = Regex("""$key\s*=\s*["']([^"']*)["']""", RegexOption.IGNORE_CASE)
+        val regex = Regex("""(?:^|\s)$key\s*=\s*["']([^"']*)["']""", RegexOption.IGNORE_CASE)
         return regex.find(line)?.groupValues?.getOrNull(1)
     }
 }
