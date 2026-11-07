@@ -24,6 +24,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private var setupLoadButton: Button? = null
     private var setupFileButton: Button? = null
+    private var setupFocusIndex = 0
     private var setupWrapper: FrameLayout? = null
     private lateinit var player: ExoPlayer
     private val channels = mutableListOf<TvChannel>()
@@ -120,6 +121,7 @@ class MainActivity : AppCompatActivity() {
         }
         setupLoadButton = loadButton
         setupFileButton = fileButton
+        setupFocusIndex = 0
         urlInput.id = View.generateViewId()
         loadButton.id = View.generateViewId()
         fileButton.id = View.generateViewId()
@@ -143,7 +145,10 @@ class MainActivity : AppCompatActivity() {
         ))
         setupWrapper = wrapper
         root.addView(wrapper, FrameLayout.LayoutParams(-1, -1))
-        urlInput.requestFocus()
+        urlInput.post {
+            urlInput.requestFocus()
+            setupFocusIndex = 0
+        }
     }
 
     private fun reopenSavedFile(uriText: String) {
@@ -226,6 +231,7 @@ class MainActivity : AppCompatActivity() {
         setupWrapper = null
         setupLoadButton = null
         setupFileButton = null
+        setupFocusIndex = 0
         channels.clear()
         channels.addAll(parsed)
         groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
@@ -328,20 +334,24 @@ class MainActivity : AppCompatActivity() {
             val keyCode = event.keyCode
             // На экране первоначальной настройки явно переводим фокус между полем URL и кнопками.
             if (setupWrapper != null) {
-                val load = setupLoadButton
-                val file = setupFileButton
+                // Не полагаемся на hasFocus(): некоторые ТВ-пульты/прошивки
+                // передают DPAD иначе, поэтому ведём фокус по явному индексу.
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_DOWN -> {
-                        when {
-                            urlInput.hasFocus() -> load?.requestFocus()
-                            load?.hasFocus() == true -> file?.requestFocus()
+                        setupFocusIndex = (setupFocusIndex + 1).coerceAtMost(2)
+                        when (setupFocusIndex) {
+                            0 -> urlInput.requestFocus()
+                            1 -> setupLoadButton?.requestFocus()
+                            2 -> setupFileButton?.requestFocus()
                         }
                         return true
                     }
                     KeyEvent.KEYCODE_DPAD_UP -> {
-                        when {
-                            file?.hasFocus() == true -> load?.requestFocus()
-                            load?.hasFocus() == true -> urlInput.requestFocus()
+                        setupFocusIndex = (setupFocusIndex - 1).coerceAtLeast(0)
+                        when (setupFocusIndex) {
+                            0 -> urlInput.requestFocus()
+                            1 -> setupLoadButton?.requestFocus()
+                            2 -> setupFileButton?.requestFocus()
                         }
                         return true
                     }
