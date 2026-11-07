@@ -20,6 +20,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var browser: LinearLayout
     private lateinit var channelList: LinearLayout
+    private val channelButtons = mutableListOf<Button>()
     private lateinit var urlInput: EditText
     private var setupWrapper: FrameLayout? = null
     private lateinit var player: ExoPlayer
@@ -235,6 +236,7 @@ class MainActivity : AppCompatActivity() {
                 groupIndex = index
                 selectedChannel = channels.indexOfFirst { it.group == group }.coerceAtLeast(0)
                 refreshChannels()
+                channelList.post { channelButtons.firstOrNull()?.requestFocus() }
             })
         }
         channelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -242,17 +244,22 @@ class MainActivity : AppCompatActivity() {
         browser.addView(channelList, LinearLayout.LayoutParams(0, -1, 1f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
         refreshChannels()
+        // На ТВ сразу переводим фокус с первой категории на первый канал.
+        channelList.post { channelButtons.firstOrNull()?.requestFocus() }
     }
 
     private fun refreshChannels() {
         if (!browserVisible) return
         channelList.removeAllViews()
+        channelButtons.clear()
         channelList.addView(label("КАНАЛЫ  •  ${groups[groupIndex]}", 20f))
         val indices = channels.indices.filter { channels[it].group == groups[groupIndex] }
         indices.forEach { index ->
-            channelList.addView(button((if (index == selectedChannel) "▶  " else "   ") + channels[index].name) {
+            val channelButton = button((if (index == selectedChannel) "▶  " else "   ") + channels[index].name) {
                 playChannel(index)
-            })
+            }
+            channelButtons += channelButton
+            channelList.addView(channelButton)
         }
     }
 
@@ -270,19 +277,20 @@ class MainActivity : AppCompatActivity() {
             val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
             val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
             when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_UP -> { selectedChannel = visible[(position - 1).coerceAtLeast(0)]; refreshChannels(); return true }
-                KeyEvent.KEYCODE_DPAD_DOWN -> { selectedChannel = visible[(position + 1).coerceAtMost(visible.lastIndex)]; refreshChannels(); return true }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     groupIndex = (groupIndex - 1).coerceAtLeast(0)
                     selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
-                    refreshChannels(); return true
+                    refreshChannels()
+                    channelList.post { channelButtons.firstOrNull()?.requestFocus() }
+                    return true
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     groupIndex = (groupIndex + 1).coerceAtMost(groups.lastIndex)
                     selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
-                    refreshChannels(); return true
+                    refreshChannels()
+                    channelList.post { channelButtons.firstOrNull()?.requestFocus() }
+                    return true
                 }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { playChannel(selectedChannel); return true }
                 KeyEvent.KEYCODE_BACK -> { closeBrowser(); return true }
             }
         }
