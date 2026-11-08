@@ -36,6 +36,9 @@ class MainActivity : AppCompatActivity() {
     private var setupFileButton: Button? = null
     private var setupFocusIndex = 0
     private var setupWrapper: FrameLayout? = null
+    private var optionsWrapper: FrameLayout? = null
+    private var pendingPlaylist: List<TvChannel> = emptyList()
+    private var pendingRestoreIndex: Int = 0
     private lateinit var player: ExoPlayer
     private val channels = mutableListOf<TvChannel>()
     private var epgProgrammes: List<EpgProgramme> = emptyList()
@@ -85,13 +88,32 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xD9000000.toInt())
             visibility = View.GONE
         }
-        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(176), Gravity.BOTTOM))
+        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(176), Gravity.BOTTOM).apply {
+            bottomMargin = dp(28)
+        })
         setContentView(root)
 
         val savedUrl = prefs.getString("playlist_url", null)
         val savedUri = prefs.getString("playlist_uri", null)
         when {
-            savedUrl != null -> fetchPlaylist(savedUrl, prefs.getInt("last_channel", -1))
+            savedUrl != null -> {
+                val cache = java.io.File(filesDir, "playlist_cache.m3u")
+                if (cache.exists() && cache.length() > 0L) {
+                    thread(name = "playlist-cache") {
+                        val parsed = runCatching { M3uParser.parse(cache.readText()) }.getOrDefault(emptyList())
+                        runOnUiThread {
+                            if (parsed.isNotEmpty()) {
+                                val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
+                                val visible = parsed.filter { it.group !in hidden }
+                                applyPlaylist(visible.ifEmpty { parsed }, prefs.getInt("last_channel", 0))
+                                val interval = prefs.getInt("playlist_interval_hours", 24).coerceIn(12, 48)
+                                val last = prefs.getLong("playlist_updated_at", 0L)
+                                if (System.currentTimeMillis() - last >= interval * 60L * 60L * 1000L) fetchPlaylist(savedUrl, selectedChannel, false)
+                            } else fetchPlaylist(savedUrl, prefs.getInt("last_channel", -1))
+                        }
+                    }
+                } else fetchPlaylist(savedUrl, prefs.getInt("last_channel", -1))
+            }
             savedUri != null -> reopenSavedFile(savedUri)
             else -> showSetup()
         }
@@ -139,7 +161,7 @@ class MainActivity : AppCompatActivity() {
         panel.addView(epgInput, LinearLayout.LayoutParams(dp(620), dp(64)).apply {
             bottomMargin = dp(12)
         })
-        val loadButton = button("Загрузить по URL", focusable = true) {
+        val loadButton = button("Далее — настройки плейлиста", focusable = true) {
             val url = urlInput.text.toString().trim()
             val epgUrl = epgInput.text.toString().trim()
             prefs.edit().putString("epg_url", epgUrl).apply()
@@ -191,9 +213,11 @@ class MainActivity : AppCompatActivity() {
                 val data = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 runOnUiThread {
                     if (!data.isNullOrBlank()) {
-                        loadPlaylist(data)
-                        val index = prefs.getInt("last_channel", 0).coerceIn(0, channels.lastIndex)
-                        playChannel(index)
+                        val parsed = M3uParser.parse(data)
+                        val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
+                        val visible = parsed.filter { it.group !in hidden }
+                        if (visible.isNotEmpty()) applyPlaylist(visible, prefs.getInt("last_channel", 0))
+                        else { toast("В плейлисте не найдены доступные каналы"); showSetup() }
                     } else {
                         toast("Не удалось восстановить плейлист. Выберите файл ещё раз.")
                         showSetup()
@@ -209,7 +233,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun fetchPlaylist(url: String, restoreIndex: Int) {
+    private fun fetchPlaylist(url: String, restoreIndex: Int, showOptions: Boolean = true) {
         val parsedUrl = url.trim()
         if (!parsedUrl.startsWith("http://", true) && !parsedUrl.startsWith("https://", true)) {
             toast("Введите корректный адрес, начинающийся с http:// или https://")
@@ -231,12 +255,18 @@ class MainActivity : AppCompatActivity() {
                     body.string()
                 }
                 val parsed = M3uParser.parse(data)
+                runCatching { java.io.File(filesDir, "playlist_cache.m3u").writeText(data) }
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     if (parsed.isEmpty()) toast("В ответе сервера не найдены каналы M3U")
                     else {
                         prefs.edit().putString("playlist_url", parsedUrl).remove("playlist_uri").apply()
-                        applyPlaylist(parsed, restoreIndex)
+                        prefs.edit().putLong("playlist_updated_at", System.currentTimeMillis()).apply()
+                        if (showOptions) showPlaylistOptions(parsed, restoreIndex) else {
+                            val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
+                            val visible = parsed.filter { it.group !in hidden }
+                            applyPlaylist(visible.ifEmpty { parsed }, restoreIndex)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -253,15 +283,84 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (parsed.isEmpty()) toast("В плейлисте не найдены каналы")
-                else applyPlaylist(parsed, 0)
+                else showPlaylistOptions(parsed, 0)
             }
         }
+    }
+
+    private fun showPlaylistOptions(parsed: List<TvChannel>, restoreIndex: Int) {
+        pendingPlaylist = parsed
+        pendingRestoreIndex = restoreIndex
+        setupWrapper?.let { root.removeView(it) }
+        setupWrapper = null
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(20), dp(24), dp(20))
+            setBackgroundColor(0xFF10141D.toInt())
+        }
+        panel.addView(label("Настройки плейлиста", 26f))
+        panel.addView(label("Выберите категории, которые нужно показывать", 17f))
+        val hidden = prefs.getStringSet("hidden_groups", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val categoryScroll = ScrollView(this).apply { isFillViewport = true }
+        val categoryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        parsed.map { it.group }.distinct().forEach { group ->
+            val check = CheckBox(this).apply {
+                text = group
+                textSize = 18f
+                setTextColor(0xFFFFFFFF.toInt())
+                buttonTintList = android.content.res.ColorStateList.valueOf(0xFF39D7FF.toInt())
+                isChecked = group !in hidden
+                setPadding(dp(8), dp(5), dp(8), dp(5))
+            }
+            check.tag = group
+            categoryBox.addView(check)
+        }
+        categoryScroll.addView(categoryBox)
+        panel.addView(categoryScroll, LinearLayout.LayoutParams(dp(620), 0, 1f))
+        panel.addView(label("Автообновление плейлиста", 17f))
+        val interval = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("Каждые 12 часов", "Каждые 24 часа", "Каждые 48 часов"))
+            val saved = prefs.getInt("playlist_interval_hours", 24)
+            setSelection(when (saved) { 12 -> 0; 48 -> 2; else -> 1 })
+        }
+        panel.addView(interval, LinearLayout.LayoutParams(dp(620), dp(56)))
+        val start = button("Сохранить и запустить плеер", focusable = true) {
+            val hiddenGroups = mutableSetOf<String>()
+            for (i in 0 until categoryBox.childCount) {
+                val cb = categoryBox.getChildAt(i) as CheckBox
+                if (!cb.isChecked) hiddenGroups.add(cb.tag as String)
+            }
+            val filtered = pendingPlaylist.filter { it.group !in hiddenGroups }
+            if (filtered.isEmpty()) {
+                toast("Нельзя скрыть все категории — оставьте хотя бы одну")
+                return@button
+            }
+            val hours = when (interval.selectedItemPosition) { 0 -> 12; 2 -> 48; else -> 24 }
+            prefs.edit().putStringSet("hidden_groups", hiddenGroups)
+                .putInt("playlist_interval_hours", hours)
+                .putLong("playlist_updated_at", System.currentTimeMillis()).apply()
+            optionsWrapper?.let { root.removeView(it) }
+            optionsWrapper = null
+            applyPlaylist(filtered, pendingRestoreIndex)
+        }
+        panel.addView(start)
+        val wrapper = FrameLayout(this)
+        wrapper.addView(panel, FrameLayout.LayoutParams(
+            minOf(resources.displayMetrics.widthPixels - dp(48), dp(760)),
+            minOf(resources.displayMetrics.heightPixels - dp(48), dp(680)), Gravity.CENTER
+        ))
+        optionsWrapper = wrapper
+        root.addView(wrapper, FrameLayout.LayoutParams(-1, -1))
+        start.requestFocus()
     }
 
     private fun applyPlaylist(parsed: List<TvChannel>, restoreIndex: Int) {
         if (parsed.isEmpty()) { toast("В плейлисте не найдены каналы"); return }
         setupWrapper?.let { root.removeView(it) }
         setupWrapper = null
+        optionsWrapper?.let { root.removeView(it) }
+        optionsWrapper = null
         setupLoadButton = null
         setupFileButton = null
         setupFocusIndex = 0
@@ -306,8 +405,8 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        categoryColumn.addView(label(category, 28f))
-        categoryColumn.addView(label("Канал ${position + 1} из ${inGroup.size}", 24f).apply {
+        categoryColumn.addView(statusText(category, 28f))
+        categoryColumn.addView(statusText("Канал ${position + 1} из ${inGroup.size}", 24f).apply {
             setTextColor(0xFFB8C0CC.toInt())
         })
         row.addView(categoryColumn, LinearLayout.LayoutParams(dp(250), -1))
@@ -337,15 +436,16 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        details.addView(label(channel.name, 36f))
+        details.addView(statusText(channel.name, 36f).apply { maxLines = 1 })
         val programme = findCurrentAndNext(channel)?.first
         val programmeText = when {
             epgLoading -> "${epgProgressText.ifBlank { "Загрузка телепрограммы" }}"
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
         }
-        details.addView(label(programmeText, 28f).apply {
+        details.addView(statusText(programmeText, 28f).apply {
             setTextColor(0xFFD0D5DE.toInt())
+            maxLines = 2
         })
         row.addView(details, LinearLayout.LayoutParams(0, dp(132), 1f))
         playbackBar.addView(row, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -722,6 +822,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun selectFirstChannelInGroup() {
         selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
+    }
+
+    private fun statusText(value: String, size: Float) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(0xFFFFFFFF.toInt())
+        setPadding(0, dp(2), dp(4), dp(2))
+        gravity = Gravity.CENTER_VERTICAL
+        includeFontPadding = false
     }
 
     private fun label(value: String, size: Float) = TextView(this).apply {
