@@ -988,8 +988,49 @@ class MainActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         }) })
-        heading("Цветовая палитра списка каналов")
-        palettes.indices.forEach { i -> action("Палитра ${i+1}" + if (prefs.getInt("channel_palette",0)==i) " ✓" else "") { prefs.edit().putInt("channel_palette",i).apply(); if(browserVisible) refreshChannels() } }
+        heading("Цветовая палитра списка каналов — выберите цвет")
+        palettes.indices.forEach { i ->
+            val colors = palettes[i]
+            val preview = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(colors[2]); cornerRadius = dp(8).toFloat()
+                    setStroke(dp(if (prefs.getInt("channel_palette", 0) == i) 3 else 1), if (prefs.getInt("channel_palette", 0) == i) 0xFFFFFFFF.toInt() else 0xFF667080.toInt())
+                }
+                addView(TextView(this@MainActivity).apply { text = "Палитра ${i + 1}"; textSize = 16f; setTextColor(-1) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                addView(View(this@MainActivity).apply { setBackgroundColor(colors[0]) }, LinearLayout.LayoutParams(dp(54), dp(32)).apply { rightMargin = dp(6) })
+                addView(View(this@MainActivity).apply { setBackgroundColor(colors[1]) }, LinearLayout.LayoutParams(dp(54), dp(32)))
+                isFocusable = true
+                setOnClickListener {
+                    prefs.edit().putInt("channel_palette", i).apply()
+                    if (browserVisible) refreshChannels()
+                    dialog.dismiss()
+                }
+            }
+            panel.addView(preview)
+        }
+        heading("Настройки адресов плейлиста и EPG")
+        action("Изменить адреса M3U и EPG") {
+            val url = EditText(this).apply { hint = "Адрес M3U"; setSingleLine(true); setText(prefs.getString("playlist_url", "") ?: "") }
+            val epg = EditText(this).apply { hint = "Адрес EPG"; setSingleLine(true); setText(prefs.getString("epg_url", "") ?: "") }
+            val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)); addView(url); addView(epg) }
+            android.app.AlertDialog.Builder(this).setTitle("Адреса источников").setView(fields)
+                .setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ ->
+                    val newUrl = url.text.toString().trim()
+                    prefs.edit().putString("playlist_url", newUrl).putString("epg_url", epg.text.toString().trim()).apply()
+                    if (newUrl.startsWith("http://") || newUrl.startsWith("https://")) fetchPlaylist(newUrl, selectedChannel, true)
+                    else toast("Адреса сохранены. Для локального плейлиста выберите файл в первоначальных настройках.")
+                }.show()
+        }
+        action("Выбор категорий плейлиста") {
+            if (channels.isNotEmpty()) showPlaylistOptions(channels.toList(), selectedChannel)
+        }
+        action("Открыть настройки приставки") {
+            runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
+                .onFailure { toast("Не удалось открыть настройки приставки") }
+        }
         dialog = android.app.AlertDialog.Builder(this).setTitle("Дополнительные настройки").setView(ScrollView(this).apply { addView(panel) }).setNegativeButton("Закрыть", null).create()
         dialog.show()
     }
