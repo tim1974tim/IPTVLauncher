@@ -313,12 +313,17 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(5), dp(8), dp(5))
             }
             check.tag = group
+            check.isFocusable = true
+            check.isFocusableInTouchMode = true
+            check.minHeight = dp(52)
             categoryBox.addView(check)
         }
         categoryScroll.addView(categoryBox)
         panel.addView(categoryScroll, LinearLayout.LayoutParams(dp(620), 0, 1f))
         panel.addView(label("Автообновление плейлиста", 17f))
         val interval = Spinner(this).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
                 listOf("Каждые 12 часов", "Каждые 24 часа", "Каждые 48 часов"))
             val saved = prefs.getInt("playlist_interval_hours", 24)
@@ -352,7 +357,11 @@ class MainActivity : AppCompatActivity() {
         ))
         optionsWrapper = wrapper
         root.addView(wrapper, FrameLayout.LayoutParams(-1, -1))
-        start.requestFocus()
+        // На Android TV начинаем навигацию с первой категории, а не с кнопки запуска.
+        categoryBox.post {
+            val first = if (categoryBox.childCount > 0) categoryBox.getChildAt(0) else interval
+            first.requestFocus()
+        }
     }
 
     private fun applyPlaylist(parsed: List<TvChannel>, restoreIndex: Int) {
@@ -736,6 +745,30 @@ class MainActivity : AppCompatActivity() {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val keyCode = event.keyCode
             // На экране первоначальной настройки явно переводим фокус между полем URL и кнопками.
+            if (optionsWrapper != null) {
+                // Отдельная навигация D-pad для экрана настроек плейлиста.
+                // Фокус последовательно проходит категории, интервал обновления и кнопку запуска.
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                    val current = currentFocus
+                    val direction = if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) View.FOCUS_DOWN else View.FOCUS_UP
+                    val next = current?.focusSearch(direction)
+                    if (next != null && optionsWrapper?.let { next === it || isDescendantOf(next, it) } == true) {
+                        next.requestFocus()
+                        next.post {
+                            val rect = android.graphics.Rect(0, 0, next.width, next.height)
+                            next.requestRectangleOnScreen(rect, true)
+                        }
+                    } else if (current == null) {
+                        optionsWrapper?.requestFocus()
+                    }
+                    return true
+                }
+                // Влево/вправо и OK передаём самим элементам (галочкам и Spinner).
+                if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    return super.dispatchKeyEvent(event)
+                }
+            }
             if (setupWrapper != null) {
                 // На экране настройки вручную обрабатываем только стрелки.
                 // OK/ENTER обязательно передаём активному EditText/Button,
@@ -835,6 +868,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun label(value: String, size: Float) = TextView(this).apply {
         text = value; textSize = size; setTextColor(-1); setPadding(12, 12, 12, 12)
+    }
+
+    private fun isDescendantOf(view: View, parent: android.view.ViewGroup): Boolean {
+        var node: android.view.ViewParent? = view.parent
+        while (node != null) {
+            if (node === parent) return true
+            node = node.parent
+        }
+        return false
     }
 
     private fun button(value: String, focusable: Boolean = false, action: () -> Unit) = Button(this).apply {
