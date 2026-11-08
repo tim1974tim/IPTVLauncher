@@ -627,7 +627,14 @@ class MainActivity : AppCompatActivity() {
             // Сначала читаем локальную копию: телепрограмма доступна даже без интернета.
             if (cacheExists) {
                 try {
-                    val cachedProgrammes = parseEpgCache(cacheFile)
+                    // Быстрый индекс уже разобранного EPG. XML разбирается только при
+                    // первом запуске после обновления или если бинарный кэш повреждён.
+                    val parsedCache = java.io.File(filesDir, "epg_cache.parsed")
+                    val cachedProgrammes = try {
+                        readParsedEpgCache(parsedCache)
+                    } catch (_: Exception) {
+                        parseEpgCache(cacheFile).also { writeParsedEpgCache(parsedCache, it) }
+                    }
                     val cachedById = cachedProgrammes.groupBy { it.channelId.lowercase(Locale.ROOT) }
                     val cachedByName = cachedProgrammes.flatMap { p ->
                         p.channelNames.map { normalizeEpgName(it) to p }
@@ -718,6 +725,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 val programmes = parseEpgCache(tempFile)
                 if (programmes.isEmpty()) throw java.io.IOException("В EPG не найдены передачи")
+                // Сохраняем разобранные передачи отдельно: повторный запуск не требует
+                // повторного разбора большого XMLTV-файла.
+                writeParsedEpgCache(java.io.File(filesDir, "epg_cache.parsed"), programmes)
                 if (!tempFile.renameTo(cacheFile)) {
                     tempFile.copyTo(cacheFile, overwrite = true)
                     tempFile.delete()
@@ -754,6 +764,75 @@ class MainActivity : AppCompatActivity() {
                 epgRequestInProgress = false
             }
         }
+    }
+
+    /** Читает компактный бинарный кэш разобранного XMLTV без повторного XML-парсинга. */
+    private fun readParsedEpgCache(file: java.io.File): List<EpgProgramme> {
+        if (!file.exists() || file.length() < 12L) throw java.io.IOException("Нет быстрого кэша EPG")
+        java.io.DataInputStream(java.io.BufferedInputStream(file.inputStream())).use { input ->
+            if (input.readInt() != 0x45504743 || input.readInt() != 1) {
+                throw java.io.IOException("Неизвестный формат кэша EPG")
+            }
+            val count = input.readInt()
+            if (count !in 1..50000) throw java.io.IOException("Некорректный кэш EPG")
+            val result = ArrayList<EpgProgramme>(count)
+            repeat(count) {
+                val channelId = readCacheString(input)
+                val title = readCacheString(input)
+                val description = readCacheString(input)
+                val start = input.readLong()
+                val end = input.readLong()
+                val namesCount = input.readInt()
+                if (namesCount !in 0..100) throw java.io.IOException("Некорректные названия каналов EPG")
+                val names = ArrayList<String>(namesCount)
+                repeat(namesCount) { names.add(readCacheString(input)) }
+                if (channelId.isNotBlank() && title.isNotBlank() && start > 0L && end > start) {
+                    result.add(EpgProgramme(channelId, names, title, description, start, end))
+                }
+            }
+            if (result.isEmpty()) throw java.io.IOException("Пустой кэш EPG")
+            return result
+        }
+    }
+
+    /** Атомарно записывает индекс EPG, чтобы отключение питания не повредило рабочую копию. */
+    private fun writeParsedEpgCache(file: java.io.File, programmes: List<EpgProgramme>) {
+        val temp = java.io.File(file.parentFile, file.name + ".tmp")
+        java.io.DataOutputStream(java.io.BufferedOutputStream(temp.outputStream())).use { output ->
+            output.writeInt(0x45504743) // EPGC
+            output.writeInt(1)
+            output.writeInt(programmes.size.coerceAtMost(50000))
+            programmes.take(50000).forEach { item ->
+                writeCacheString(output, item.channelId)
+                writeCacheString(output, item.title)
+                writeCacheString(output, item.description)
+                output.writeLong(item.startMillis)
+                output.writeLong(item.endMillis)
+                val names = item.channelNames.take(100)
+                output.writeInt(names.size)
+                names.forEach { writeCacheString(output, it) }
+            }
+        }
+        if (file.exists() && !file.delete()) throw java.io.IOException("Не удалось заменить быстрый кэш EPG")
+        if (!temp.renameTo(file)) {
+            temp.copyTo(file, overwrite = true)
+            temp.delete()
+        }
+    }
+
+    private fun writeCacheString(output: java.io.DataOutputStream, value: String) {
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        if (bytes.size > 1_000_000) throw java.io.IOException("Слишком длинное поле EPG")
+        output.writeInt(bytes.size)
+        output.write(bytes)
+    }
+
+    private fun readCacheString(input: java.io.DataInputStream): String {
+        val size = input.readInt()
+        if (size !in 0..1_000_000) throw java.io.IOException("Повреждённый кэш EPG")
+        val bytes = ByteArray(size)
+        input.readFully(bytes)
+        return String(bytes, Charsets.UTF_8)
     }
 
     /** XMLTV сохраняется в исходном виде; gzip распаковывается потоково при чтении кэша. */
