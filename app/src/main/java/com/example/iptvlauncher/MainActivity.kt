@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private var groupIndex = 0
     private var selectedChannel = 0
     private var browserVisible = false
+    private var homeReturnPending = false
     private val prefs by lazy { getSharedPreferences("iptv", MODE_PRIVATE) }
 
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -61,6 +62,26 @@ class MainActivity : AppCompatActivity() {
                 val data = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 runOnUiThread { if (data != null) loadPlaylist(data) else toast("Не удалось открыть файл") }
             }
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // HOME: запоминаем канал и останавливаем поток, чтобы он не продолжал играть на главном экране.
+        if (::player.isInitialized && channels.isNotEmpty() && !isFinishing) {
+            saveLastChannelIdentity()
+            homeReturnPending = true
+            player.stop()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // При возвращении в приложение запускаем тот же канал, который играл до HOME.
+        if (homeReturnPending && ::player.isInitialized && channels.isNotEmpty()) {
+            homeReturnPending = false
+            val index = resolveLastChannelIndex(channels, selectedChannel)
+            playChannel(index)
         }
     }
 
@@ -379,7 +400,7 @@ class MainActivity : AppCompatActivity() {
         channels.addAll(parsed)
         groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
         groupIndex = 0
-        val index = restoreIndex.takeIf { it in channels.indices } ?: 0
+        val index = resolveLastChannelIndex(channels, restoreIndex)
         selectedChannel = index
         playChannel(index)
         updatePlaybackBar()
@@ -387,11 +408,35 @@ class MainActivity : AppCompatActivity() {
         toast("Загружено каналов: ${channels.size}")
     }
 
+    private fun saveLastChannelIdentity() {
+        val channel = channels.getOrNull(selectedChannel) ?: return
+        prefs.edit()
+            .putString("last_channel_url", channel.url)
+            .putString("last_channel_tvg_id", channel.tvgId.orEmpty())
+            .putString("last_channel_name", channel.name)
+            .apply()
+    }
+
+    private fun resolveLastChannelIndex(list: List<TvChannel>, fallback: Int): Int {
+        if (list.isEmpty()) return 0
+        val savedId = prefs.getString("last_channel_tvg_id", null)?.takeIf { it.isNotBlank() }
+        val savedUrl = prefs.getString("last_channel_url", null)?.takeIf { it.isNotBlank() }
+        val savedName = prefs.getString("last_channel_name", null)?.takeIf { it.isNotBlank() }
+        val byId = savedId?.let { id -> list.indexOfFirst { it.tvgId.equals(id, ignoreCase = true) } } ?: -1
+        if (byId >= 0) return byId
+        val byUrl = savedUrl?.let { url -> list.indexOfFirst { it.url == url } } ?: -1
+        if (byUrl >= 0) return byUrl
+        val byName = savedName?.let { name -> list.indexOfFirst { it.name.equals(name, ignoreCase = true) } } ?: -1
+        if (byName >= 0) return byName
+        return fallback.takeIf { it in list.indices } ?: 0
+    }
+
     private fun playChannel(index: Int) {
         if (index !in channels.indices) return
         selectedChannel = index
         groupIndex = groups.indexOf(channels[index].group).coerceAtLeast(0)
         prefs.edit().putInt("last_channel", index).apply()
+        saveLastChannelIdentity()
         player.setMediaItem(MediaItem.fromUri(channels[index].url))
         player.prepare()
         player.playWhenReady = true
