@@ -370,7 +370,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun normalizeEpgName(value: String): String = value.lowercase(Locale.ROOT)
-        .replace(Regex("[^\p{L}\p{N}]"), "")
+        .replace(Regex("[^\\p{L}\\p{N}]"), "")
 
     private fun changeChannelInGroup(direction: Int) {
         if (channels.isEmpty()) return
