@@ -6,6 +6,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.*
+import java.util.Locale
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
@@ -22,12 +23,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var channelList: LinearLayout
     private lateinit var playbackBar: LinearLayout
     private lateinit var urlInput: EditText
+    private lateinit var epgInput: EditText
     private var setupLoadButton: Button? = null
     private var setupFileButton: Button? = null
     private var setupFocusIndex = 0
     private var setupWrapper: FrameLayout? = null
     private lateinit var player: ExoPlayer
     private val channels = mutableListOf<TvChannel>()
+    private var epgProgrammes: List<EpgProgramme> = emptyList()
+    private var epgLoading = false
     private var groups = listOf<String>()
     private var groupIndex = 0
     private var selectedChannel = 0
@@ -103,11 +107,30 @@ class MainActivity : AppCompatActivity() {
             isFocusableInTouchMode = true
             setBackgroundColor(0xFF202A3A.toInt())
         }
-        panel.addView(urlInput, LinearLayout.LayoutParams(dp(620), dp(68)).apply {
+        panel.addView(urlInput, LinearLayout.LayoutParams(dp(620), dp(64)).apply {
+            bottomMargin = dp(8)
+        })
+        epgInput = EditText(this).apply {
+            hint = "Ссылка на EPG XMLTV (.xml или .xml.gz)"
+            setSingleLine(true)
+            textSize = 16f
+            setTextColor(-1)
+            setHintTextColor(0xFF8993A4.toInt())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            minHeight = dp(60)
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setBackgroundColor(0xFF202A3A.toInt())
+            setText(prefs.getString("epg_url", "") ?: "")
+        }
+        panel.addView(epgInput, LinearLayout.LayoutParams(dp(620), dp(64)).apply {
             bottomMargin = dp(12)
         })
         val loadButton = button("Загрузить по URL", focusable = true) {
             val url = urlInput.text.toString().trim()
+            val epgUrl = epgInput.text.toString().trim()
+            prefs.edit().putString("epg_url", epgUrl).apply()
             if (url.isNotEmpty()) {
                 prefs.edit().putString("playlist_url", url).remove("playlist_uri").apply()
                 fetchPlaylist(url, -1)
@@ -117,24 +140,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val fileButton = button("Открыть файл M3U", focusable = true) {
+            prefs.edit().putString("epg_url", epgInput.text.toString().trim()).apply()
             openFile.launch(arrayOf("*/*"))
         }
         setupLoadButton = loadButton
         setupFileButton = fileButton
         setupFocusIndex = 0
         urlInput.id = View.generateViewId()
+        epgInput.id = View.generateViewId()
         loadButton.id = View.generateViewId()
         fileButton.id = View.generateViewId()
-        urlInput.nextFocusDownId = loadButton.id
-        loadButton.nextFocusUpId = urlInput.id
+        urlInput.nextFocusDownId = epgInput.id
+        epgInput.nextFocusUpId = urlInput.id
+        epgInput.nextFocusDownId = loadButton.id
+        loadButton.nextFocusUpId = epgInput.id
         loadButton.nextFocusDownId = fileButton.id
         fileButton.nextFocusUpId = loadButton.id
-        urlInput.setOnKeyListener { _, keyCode, event ->
-            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                loadButton.requestFocus()
-                true
-            } else false
-        }
         panel.addView(loadButton)
         panel.addView(fileButton)
         val wrapper = FrameLayout(this)
@@ -240,6 +261,7 @@ class MainActivity : AppCompatActivity() {
         selectedChannel = index
         playChannel(index)
         updatePlaybackBar()
+        loadEpgIfConfigured()
         toast("Загружено каналов: ${channels.size}")
     }
 
@@ -266,8 +288,89 @@ class MainActivity : AppCompatActivity() {
         val next = inGroup.getOrNull(position + 1)?.let { channels[it].name } ?: ""
         playbackBar.addView(label("◀  $category  ▶", 14f))
         playbackBar.addView(label(listOf(previous, "▶ $current", next).filter { it.isNotBlank() }.joinToString("     •     "), 16f))
+        val channel = channels.getOrNull(selectedChannel)
+        val programme = channel?.let { findCurrentAndNext(it) }
+        val epgLine = when {
+            epgLoading -> "EPG: загрузка телепрограммы…"
+            programme == null -> if (prefs.getString("epg_url", "").isNullOrBlank()) "EPG: добавьте ссылку XMLTV в настройках" else "EPG: программа для канала не найдена"
+            else -> {
+                val nowText = "Сейчас: ${programme.first.title}  ${programme.first.timeRange()}"
+                val nextText = programme.second?.let { "Далее: ${it.title}  ${it.timeRange()}" } ?: ""
+                listOf(nowText, nextText).filter { it.isNotBlank() }.joinToString("     •     ")
+            }
+        }
+        playbackBar.addView(label(epgLine, 13f))
         playbackBar.visibility = if (browserVisible) View.GONE else View.VISIBLE
     }
+
+    private fun loadEpgIfConfigured() {
+        val url = prefs.getString("epg_url", "")?.trim().orEmpty()
+        if (url.isBlank()) {
+            epgProgrammes = emptyList()
+            epgLoading = false
+            updatePlaybackBar()
+            return
+        }
+        if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
+            epgLoading = false
+            toast("Ссылка EPG должна начинаться с http:// или https://")
+            updatePlaybackBar()
+            return
+        }
+        epgLoading = true
+        updatePlaybackBar()
+        thread(name = "epg-download") {
+            try {
+                val client = OkHttpClient.Builder()
+                    .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+                    .callTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val programmes = client.newCall(Request.Builder().url(url)
+                    .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
+                    if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
+                    val body = response.body ?: throw java.io.IOException("Пустой ответ EPG")
+                    val bytes = body.bytes()
+                    val xmlBytes = if (url.substringBefore('?').endsWith(".gz", true) ||
+                        response.header("Content-Encoding")?.contains("gzip", true) == true ||
+                        (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())) {
+                        java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.readBytes() }
+                    } else bytes
+                    if (xmlBytes.size > 100L * 1024L * 1024L) throw java.io.IOException("EPG больше 100 МБ")
+                    EpgParser.parse(xmlBytes)
+                }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    epgProgrammes = programmes
+                    epgLoading = false
+                    updatePlaybackBar()
+                    toast("EPG загружен: ${programmes.size} передач")
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    epgLoading = false
+                    updatePlaybackBar()
+                    toast("Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
+                }
+            }
+        }
+    }
+
+    private fun findCurrentAndNext(channel: TvChannel): Pair<EpgProgramme, EpgProgramme?>? {
+        val now = System.currentTimeMillis()
+        val candidates = epgProgrammes.asSequence().filter { programme ->
+            val idMatch = !channel.tvgId.isNullOrBlank() && programme.channelId.equals(channel.tvgId, true)
+            val nameMatch = programme.channelNames.any { normalizeEpgName(it) == normalizeEpgName(channel.name) }
+            idMatch || nameMatch
+        }.sortedBy { it.startMillis }.toList()
+        val current = candidates.firstOrNull { now >= it.startMillis && now < it.endMillis } ?: return null
+        val next = candidates.firstOrNull { it.startMillis >= current.endMillis }
+        return current to next
+    }
+
+    private fun normalizeEpgName(value: String): String = value.lowercase(Locale.ROOT)
+        .replace(Regex("[^\p{L}\p{N}]"), "")
 
     private fun changeChannelInGroup(direction: Int) {
         if (channels.isEmpty()) return
@@ -339,11 +442,12 @@ class MainActivity : AppCompatActivity() {
                 // иначе кнопка загрузки получает фокус, но не нажимается.
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_DOWN -> {
-                        setupFocusIndex = (setupFocusIndex + 1).coerceAtMost(2)
+                        setupFocusIndex = (setupFocusIndex + 1).coerceAtMost(3)
                         when (setupFocusIndex) {
                             0 -> urlInput.requestFocus()
-                            1 -> setupLoadButton?.requestFocus()
-                            2 -> setupFileButton?.requestFocus()
+                            1 -> epgInput.requestFocus()
+                            2 -> setupLoadButton?.requestFocus()
+                            3 -> setupFileButton?.requestFocus()
                         }
                         return true
                     }
@@ -351,8 +455,9 @@ class MainActivity : AppCompatActivity() {
                         setupFocusIndex = (setupFocusIndex - 1).coerceAtLeast(0)
                         when (setupFocusIndex) {
                             0 -> urlInput.requestFocus()
-                            1 -> setupLoadButton?.requestFocus()
-                            2 -> setupFileButton?.requestFocus()
+                            1 -> epgInput.requestFocus()
+                            2 -> setupLoadButton?.requestFocus()
+                            3 -> setupFileButton?.requestFocus()
                         }
                         return true
                     }
