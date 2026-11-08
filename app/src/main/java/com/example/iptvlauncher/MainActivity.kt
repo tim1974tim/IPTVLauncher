@@ -48,9 +48,6 @@ class MainActivity : AppCompatActivity() {
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
     private var epgByName: Map<String, List<EpgProgramme>> = emptyMap()
     private var groups = listOf<String>()
-    // Индексы каналов заранее группируются, чтобы не фильтровать весь плейлист при каждом нажатии.
-    private var channelIndicesByGroup: Map<String, List<Int>> = emptyMap()
-    private var allChannelIndices: List<Int> = emptyList()
     private var groupIndex = 0
     private var selectedChannel = 0
     private var browserVisible = false
@@ -327,17 +324,6 @@ class MainActivity : AppCompatActivity() {
         panel.addView(label("Настройки плейлиста", 26f))
         panel.addView(label("Выберите категории, которые нужно показывать", 17f))
         val hidden = prefs.getStringSet("hidden_groups", emptySet())?.toMutableSet() ?: mutableSetOf()
-        val allChannelsCheck = CheckBox(this).apply {
-            text = "Показывать категорию «Все каналы»"
-            textSize = 19f
-            setTextColor(0xFFFFFFFF.toInt())
-            buttonTintList = android.content.res.ColorStateList.valueOf(0xFF39D7FF.toInt())
-            isChecked = prefs.getBoolean("show_all_channels", true)
-            isFocusable = true
-            isFocusableInTouchMode = true
-            minHeight = dp(56)
-        }
-        panel.addView(allChannelsCheck)
         val categoryScroll = ScrollView(this).apply { isFillViewport = true }
         val categoryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         parsed.map { it.group }.distinct().forEach { group ->
@@ -380,7 +366,6 @@ class MainActivity : AppCompatActivity() {
             }
             val hours = when (interval.selectedItemPosition) { 0 -> 12; 2 -> 48; else -> 24 }
             prefs.edit().putStringSet("hidden_groups", hiddenGroups)
-                .putBoolean("show_all_channels", allChannelsCheck.isChecked)
                 .putInt("playlist_interval_hours", hours)
                 .putLong("playlist_updated_at", System.currentTimeMillis()).apply()
             optionsWrapper?.let { root.removeView(it) }
@@ -413,12 +398,7 @@ class MainActivity : AppCompatActivity() {
         setupFocusIndex = 0
         channels.clear()
         channels.addAll(parsed)
-        channelIndicesByGroup = channels.indices.groupBy { channels[it].group }
-        allChannelIndices = channels.indices.toList()
-        groups = buildList {
-            if (prefs.getBoolean("show_all_channels", true)) add("Все каналы")
-            addAll(channelIndicesByGroup.keys.ifEmpty { listOf("Без категории") })
-        }
+        groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
         groupIndex = 0
         val index = resolveLastChannelIndex(channels, restoreIndex)
         selectedChannel = index
@@ -454,7 +434,7 @@ class MainActivity : AppCompatActivity() {
     private fun playChannel(index: Int) {
         if (index !in channels.indices) return
         selectedChannel = index
-        groupIndex = if (groups.firstOrNull() == "Все каналы" && prefs.getBoolean("show_all_channels", true)) 0 else groups.indexOf(channels[index].group).coerceAtLeast(0)
+        groupIndex = groups.indexOf(channels[index].group).coerceAtLeast(0)
         prefs.edit().putInt("last_channel", index).apply()
         saveLastChannelIdentity()
         player.setMediaItem(MediaItem.fromUri(channels[index].url))
@@ -687,15 +667,10 @@ class MainActivity : AppCompatActivity() {
     private fun normalizeEpgName(value: String): String = value.lowercase(Locale.ROOT)
         .replace(Regex("[^\\p{L}\\p{N}]"), "")
 
-    private fun indicesForCurrentGroup(): List<Int> {
-        val category = groups.getOrNull(groupIndex) ?: return emptyList()
-        return if (category == "Все каналы") allChannelIndices
-        else channelIndicesByGroup[category].orEmpty()
-    }
-
     private fun changeChannelInGroup(direction: Int) {
         if (channels.isEmpty()) return
-        val indices = indicesForCurrentGroup()
+        val category = groups.getOrNull(groupIndex) ?: return
+        val indices = channels.indices.filter { channels[it].group == category }
         if (indices.isEmpty()) return
         val position = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
         val nextPosition = (position + direction).coerceIn(0, indices.lastIndex)
@@ -752,17 +727,9 @@ class MainActivity : AppCompatActivity() {
         if (!browserVisible) return
         channelList.removeAllViews()
         channelList.addView(label("${groups.getOrNull(groupIndex) ?: "КАНАЛЫ"}  •  КАНАЛЫ", 20f))
-        val indices = indicesForCurrentGroup()
+        val indices = channels.indices.filter { channels[it].group == groups[groupIndex] }
         var selectedRow: View? = null
-        // Не создаём тысячи View одновременно: это перегружает главный поток и приводит к зависанию.
-        // Показываем окно вокруг выбранного канала; полный индексный список остаётся доступен для навигации.
-        val selectedPosition = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
-        val windowStart = (selectedPosition - 40).coerceAtLeast(0)
-        val windowEnd = (selectedPosition + 41).coerceAtMost(indices.size)
-        if (windowStart > 0 || windowEnd < indices.size) {
-            channelList.addView(label("Каналы ${windowStart + 1}–$windowEnd из ${indices.size}", 14f))
-        }
-        indices.subList(windowStart, windowEnd).forEach { index ->
+        indices.forEach { index ->
             val isSelected = index == selectedChannel
             val row = button((if (isSelected) "▶  " else "   ") + channels[index].name) {
                 selectedChannel = index
@@ -919,7 +886,7 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
             if (browserVisible) {
-                val visible = indicesForCurrentGroup()
+                val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
                 if (visible.isNotEmpty()) {
                     val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
                     when (keyCode) {
@@ -967,7 +934,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectFirstChannelInGroup() {
-        selectedChannel = indicesForCurrentGroup().firstOrNull() ?: 0
+        selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
     }
 
     private fun statusText(value: String, size: Float) = TextView(this).apply {

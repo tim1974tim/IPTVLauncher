@@ -2,7 +2,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false"/>
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
     <uses-permission android:name="android.permission.INTERNET"/>
-    <application android:theme="@style/AppTheme" android:label="IPTV Launcher" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:usesCleartextTraffic="true" android:banner="@drawable/tv_banner">
+    <application android:theme="@style/AppTheme" android:label="IPTV Launcher" android:usesCleartextTraffic="true" android:banner="@drawable/tv_banner">
         <activity android:name=".MainActivity" android:screenOrientation="landscape" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
