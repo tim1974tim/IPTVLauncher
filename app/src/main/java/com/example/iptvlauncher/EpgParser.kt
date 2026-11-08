@@ -35,7 +35,8 @@ object EpgParser {
         var displayName = StringBuilder()
         var titleText = StringBuilder()
         var depth = 0
-        while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+        // Ограничение защищает приставки от EPG с огромным числом передач.
+        while (parser.eventType != XmlPullParser.END_DOCUMENT && result.size < 50000) {
             when (parser.eventType) {
                 XmlPullParser.START_TAG -> {
                     depth++

@@ -2,6 +2,10 @@ package com.example.iptvlauncher
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.graphics.BitmapFactory
+import android.widget.ImageView
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -21,7 +25,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var browser: LinearLayout
     private lateinit var channelList: LinearLayout
+    private lateinit var channelScroll: ScrollView
+    private lateinit var categoryScroll: ScrollView
     private lateinit var playbackBar: LinearLayout
+    private val statusHandler = Handler(Looper.getMainLooper())
+    private val hideStatusRunnable = Runnable { if (!browserVisible && ::playbackBar.isInitialized) playbackBar.visibility = View.GONE }
     private lateinit var urlInput: EditText
     private lateinit var epgInput: EditText
     private var setupLoadButton: Button? = null
@@ -73,7 +81,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xD9000000.toInt())
             visibility = View.GONE
         }
-        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(76), Gravity.BOTTOM))
+        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(88), Gravity.BOTTOM))
         setContentView(root)
 
         val savedUrl = prefs.getString("playlist_url", null)
@@ -275,6 +283,7 @@ class MainActivity : AppCompatActivity() {
         player.playWhenReady = true
         closeBrowser()
         updatePlaybackBar()
+        showPlaybackBarForFiveSeconds()
     }
 
     private fun updatePlaybackBar() {
@@ -283,24 +292,67 @@ class MainActivity : AppCompatActivity() {
         val category = groups.getOrNull(groupIndex) ?: "Без категории"
         val inGroup = channels.indices.filter { channels[it].group == category }
         val position = inGroup.indexOf(selectedChannel).coerceAtLeast(0)
-        val previous = inGroup.getOrNull(position - 1)?.let { channels[it].name } ?: ""
-        val current = channels.getOrNull(selectedChannel)?.name ?: ""
-        val next = inGroup.getOrNull(position + 1)?.let { channels[it].name } ?: ""
-        playbackBar.addView(label("◀  $category  ▶", 14f))
-        playbackBar.addView(label(listOf(previous, "▶ $current", next).filter { it.isNotBlank() }.joinToString("     •     "), 16f))
-        val channel = channels.getOrNull(selectedChannel)
-        val programme = channel?.let { findCurrentAndNext(it) }
-        val epgLine = when {
-            epgLoading -> "EPG: загрузка телепрограммы…"
-            programme == null -> if (prefs.getString("epg_url", "").isNullOrBlank()) "EPG: добавьте ссылку XMLTV в настройках" else "EPG: программа для канала не найдена"
-            else -> {
-                val nowText = "Сейчас: ${programme.first.title}  ${programme.first.timeRange()}"
-                val nextText = programme.second?.let { "Далее: ${it.title}  ${it.timeRange()}" } ?: ""
-                listOf(nowText, nextText).filter { it.isNotBlank() }.joinToString("     •     ")
+        val channel = channels.getOrNull(selectedChannel) ?: return
+        val programme = findCurrentAndNext(channel)?.first
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val categoryColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        categoryColumn.addView(label(category, 14f))
+        categoryColumn.addView(label("Канал ${position + 1} из ${inGroup.size}", 12f).apply {
+            setTextColor(0xFFB8C0CC.toInt())
+        })
+        row.addView(categoryColumn, LinearLayout.LayoutParams(dp(190), -1))
+
+        if (!channel.logo.isNullOrBlank()) {
+            val logoView = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                tag = channel.logo
+            }
+            row.addView(logoView, LinearLayout.LayoutParams(dp(52), dp(52)).apply {
+                rightMargin = dp(12)
+            })
+            val logoUrl = channel.logo!!
+            thread(name = "channel-logo") {
+                try {
+                    val bitmap = OkHttpClient().newCall(Request.Builder().url(logoUrl).build()).execute().use { response ->
+                        if (!response.isSuccessful) null else response.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
+                    }
+                    if (bitmap != null) runOnUiThread {
+                        if (logoView.tag == logoUrl && !isFinishing && !isDestroyed) logoView.setImageBitmap(bitmap)
+                    }
+                } catch (_: Exception) { }
             }
         }
-        playbackBar.addView(label(epgLine, 13f))
-        playbackBar.visibility = if (browserVisible) View.GONE else View.VISIBLE
+
+        val details = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        details.addView(label(channel.name, 18f))
+        val programmeText = when {
+            epgLoading -> "Загрузка телепрограммы…"
+            programme != null -> "${programme.title}  ${programme.timeRange()}"
+            else -> "Телепрограмма недоступна"
+        }
+        details.addView(label(programmeText, 14f).apply {
+            setTextColor(0xFFD0D5DE.toInt())
+        })
+        row.addView(details, LinearLayout.LayoutParams(0, -1, 1f))
+        playbackBar.addView(row, LinearLayout.LayoutParams(-1, -1))
+    }
+
+    private fun showPlaybackBarForFiveSeconds() {
+        statusHandler.removeCallbacks(hideStatusRunnable)
+        if (!browserVisible && channels.isNotEmpty()) {
+            playbackBar.visibility = View.VISIBLE
+            statusHandler.postDelayed(hideStatusRunnable, 5_000L)
+        }
     }
 
     private fun loadEpgIfConfigured() {
@@ -330,13 +382,17 @@ class MainActivity : AppCompatActivity() {
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
                     if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
                     val body = response.body ?: throw java.io.IOException("Пустой ответ EPG")
-                    val bytes = body.bytes()
-                    val xmlBytes = if (url.substringBefore('?').endsWith(".gz", true) ||
+                    // Ограничиваем чтение до выделения памяти: некоторые XMLTV-файлы
+                    // распаковываются в сотни мегабайт и могут завершить приложение на ТВ-боксе.
+                    val rawBytes = body.byteStream().use { readLimited(it, 32L * 1024L * 1024L) }
+                    val isGzip = url.substringBefore('?').endsWith(".gz", true) ||
                         response.header("Content-Encoding")?.contains("gzip", true) == true ||
-                        (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())) {
-                        java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.readBytes() }
-                    } else bytes
-                    if (xmlBytes.size > 100L * 1024L * 1024L) throw java.io.IOException("EPG больше 100 МБ")
+                        (rawBytes.size >= 2 && rawBytes[0] == 0x1f.toByte() && rawBytes[1] == 0x8b.toByte())
+                    val xmlBytes = if (isGzip) {
+                        java.util.zip.GZIPInputStream(rawBytes.inputStream()).use {
+                            readLimited(it, 48L * 1024L * 1024L)
+                        }
+                    } else rawBytes
                     EpgParser.parse(xmlBytes)
                 }
                 runOnUiThread {
@@ -355,6 +411,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun readLimited(input: java.io.InputStream, maxBytes: Long): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > maxBytes) throw java.io.IOException("Файл EPG слишком большой (лимит ${maxBytes / (1024 * 1024)} МБ)")
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
     }
 
     private fun findCurrentAndNext(channel: TvChannel): Pair<EpgProgramme, EpgProgramme?>? {
@@ -395,9 +465,10 @@ class MainActivity : AppCompatActivity() {
         playbackBar.visibility = View.GONE
         browser = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(30, 24, 30, 24)
+            setPadding(dp(20), dp(16), dp(20), dp(16))
             setBackgroundColor(0xF00B0E14.toInt())
         }
+
         val categories = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         categories.addView(label("КАТЕГОРИИ", 16f))
         groups.forEachIndexed { index, group ->
@@ -405,13 +476,45 @@ class MainActivity : AppCompatActivity() {
                 groupIndex = index
                 selectFirstChannelInGroup()
                 refreshChannels()
+                refreshCategories()
             })
         }
+        categoryScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(categories)
+        }
         channelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        browser.addView(categories, LinearLayout.LayoutParams(340, -1))
-        browser.addView(channelList, LinearLayout.LayoutParams(0, -1, 1f))
+        channelScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(channelList)
+        }
+        browser.addView(categoryScroll, LinearLayout.LayoutParams(dp(260), 0, 1f))
+        browser.addView(channelScroll, LinearLayout.LayoutParams(0, -1, 1f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
         refreshChannels()
+        refreshCategories()
+    }
+
+    private fun refreshCategories() {
+        if (!browserVisible || !::categoryScroll.isInitialized) return
+        val categories = categoryScroll.getChildAt(0) as? LinearLayout ?: return
+        categories.removeAllViews()
+        categories.addView(label("КАТЕГОРИИ", 16f))
+        groups.forEachIndexed { index, group ->
+            categories.addView(button((if (index == groupIndex) "●  " else "   ") + group) {
+                groupIndex = index
+                selectFirstChannelInGroup()
+                refreshChannels()
+                refreshCategories()
+            })
+        }
+        categories.post {
+            val selected = categories.getChildAt(groupIndex + 1) ?: return@post
+            val target = (selected.top - categoryScroll.height / 2 + selected.height / 2).coerceAtLeast(0)
+            categoryScroll.smoothScrollTo(0, target)
+        }
     }
 
     private fun refreshChannels() {
@@ -419,10 +522,42 @@ class MainActivity : AppCompatActivity() {
         channelList.removeAllViews()
         channelList.addView(label("КАНАЛЫ  •  ${groups[groupIndex]}", 20f))
         val indices = channels.indices.filter { channels[it].group == groups[groupIndex] }
+        var selectedRow: View? = null
         indices.forEach { index ->
-            channelList.addView(button((if (index == selectedChannel) "▶  " else "   ") + channels[index].name) {
+            val isSelected = index == selectedChannel
+            val row = button((if (isSelected) "▶  " else "   ") + channels[index].name) {
                 playChannel(index)
-            })
+            }.apply {
+                isAllCaps = false
+                textSize = 17f
+                minHeight = dp(62)
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(dp(18), dp(8), dp(14), dp(8))
+                if (isSelected) {
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    backgroundTintList = null
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(0xFF174A70.toInt())
+                        setCornerRadius(dp(9).toFloat())
+                        setStroke(dp(3), 0xFF39D7FF.toInt())
+                    }
+                    elevation = dp(4).toFloat()
+                } else {
+                    setTextColor(0xFFE0E7F0.toInt())
+                    setTypeface(typeface, android.graphics.Typeface.NORMAL)
+                    setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
+                    elevation = 0f
+                }
+            }
+            channelList.addView(row)
+            if (index == selectedChannel) selectedRow = row
+        }
+        selectedRow?.let { row ->
+            channelList.post {
+                val target = (row.top - channelScroll.height / 2 + row.height / 2).coerceAtLeast(0)
+                channelScroll.smoothScrollTo(0, target)
+            }
         }
     }
 
@@ -540,7 +675,9 @@ class MainActivity : AppCompatActivity() {
     private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_LONG).show()
 
     override fun onDestroy() {
-        player.release()
+        statusHandler.removeCallbacks(hideStatusRunnable)
+        if (::player.isInitialized) player.release()
         super.onDestroy()
     }
+
 }
