@@ -40,6 +40,10 @@ class MainActivity : AppCompatActivity() {
     private val channels = mutableListOf<TvChannel>()
     private var epgProgrammes: List<EpgProgramme> = emptyList()
     private var epgLoading = false
+    private var epgProgress = 0
+    private var epgProgressText = ""
+    private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
+    private var epgByName: Map<String, List<EpgProgramme>> = emptyMap()
     private var groups = listOf<String>()
     private var groupIndex = 0
     private var selectedChannel = 0
@@ -77,7 +81,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
         playbackBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setPadding(dp(18), dp(4), dp(18), dp(6))
             setBackgroundColor(0xD9000000.toInt())
             visibility = View.GONE
         }
@@ -293,29 +297,28 @@ class MainActivity : AppCompatActivity() {
         val inGroup = channels.indices.filter { channels[it].group == category }
         val position = inGroup.indexOf(selectedChannel).coerceAtLeast(0)
         val channel = channels.getOrNull(selectedChannel) ?: return
-        val programme = findCurrentAndNext(channel)?.first
 
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
         }
         val categoryColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP
         }
-        categoryColumn.addView(label(category, 14f))
-        categoryColumn.addView(label("Канал ${position + 1} из ${inGroup.size}", 12f).apply {
+        categoryColumn.addView(label(category, 28f))
+        categoryColumn.addView(label("Канал ${position + 1} из ${inGroup.size}", 24f).apply {
             setTextColor(0xFFB8C0CC.toInt())
         })
-        row.addView(categoryColumn, LinearLayout.LayoutParams(dp(190), -1))
+        row.addView(categoryColumn, LinearLayout.LayoutParams(dp(250), -1))
 
         if (!channel.logo.isNullOrBlank()) {
             val logoView = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 tag = channel.logo
             }
-            row.addView(logoView, LinearLayout.LayoutParams(dp(52), dp(52)).apply {
-                rightMargin = dp(12)
+            row.addView(logoView, LinearLayout.LayoutParams(dp(104), dp(104)).apply {
+                rightMargin = dp(20)
             })
             val logoUrl = channel.logo!!
             thread(name = "channel-logo") {
@@ -332,26 +335,38 @@ class MainActivity : AppCompatActivity() {
 
         val details = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP
         }
-        details.addView(label(channel.name, 18f))
+        details.addView(label(channel.name, 36f))
+        val programme = findCurrentAndNext(channel)?.first
         val programmeText = when {
-            epgLoading -> "Загрузка телепрограммы…"
+            epgLoading -> "${epgProgressText.ifBlank { "Загрузка телепрограммы" }}"
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
         }
-        details.addView(label(programmeText, 14f).apply {
+        details.addView(label(programmeText, 28f).apply {
             setTextColor(0xFFD0D5DE.toInt())
         })
-        row.addView(details, LinearLayout.LayoutParams(0, -1, 1f))
-        playbackBar.addView(row, LinearLayout.LayoutParams(-1, -1))
+        row.addView(details, LinearLayout.LayoutParams(0, dp(132), 1f))
+        playbackBar.addView(row, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        if (epgLoading) {
+            val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100
+                progress = epgProgress.coerceIn(0, 100)
+                isIndeterminate = epgProgress <= 0
+            }
+            playbackBar.addView(progress, LinearLayout.LayoutParams(-1, dp(10)).apply {
+                topMargin = dp(4)
+            })
+        }
     }
 
     private fun showPlaybackBarForFiveSeconds() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         if (!browserVisible && channels.isNotEmpty()) {
             playbackBar.visibility = View.VISIBLE
-            statusHandler.postDelayed(hideStatusRunnable, 5_000L)
+            if (!epgLoading) statusHandler.postDelayed(hideStatusRunnable, 5_000L)
         }
     }
 
@@ -359,6 +374,8 @@ class MainActivity : AppCompatActivity() {
         val url = prefs.getString("epg_url", "")?.trim().orEmpty()
         if (url.isBlank()) {
             epgProgrammes = emptyList()
+            epgById = emptyMap()
+            epgByName = emptyMap()
             epgLoading = false
             updatePlaybackBar()
             return
@@ -370,6 +387,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
         epgLoading = true
+        epgProgress = 0
+        epgProgressText = "Загрузка телепрограммы…"
+        statusHandler.removeCallbacks(hideStatusRunnable)
+        playbackBar.visibility = View.VISIBLE
         updatePlaybackBar()
         thread(name = "epg-download") {
             try {
@@ -382,9 +403,26 @@ class MainActivity : AppCompatActivity() {
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
                     if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
                     val body = response.body ?: throw java.io.IOException("Пустой ответ EPG")
-                    // Читаем XMLTV потоком, не загружая весь распакованный файл в память.
-                    // Лимиты: до 64 МБ для gzip и до 256 МБ для XML после распаковки.
-                    val source = java.io.BufferedInputStream(body.byteStream())
+                    val contentLength = body.contentLength()
+                    val downloaded = java.util.concurrent.atomic.AtomicLong(0L)
+                    val rawStream = object : java.io.FilterInputStream(body.byteStream()) {
+                        private fun report(count: Int) {
+                            if (count <= 0) return
+                            val bytes = downloaded.addAndGet(count.toLong())
+                            val percent = if (contentLength > 0) ((bytes * 100L) / contentLength).toInt().coerceIn(0, 99) else 0
+                            if (bytes % (512L * 1024L) < count || percent == 99) runOnUiThread {
+                                if (!isFinishing && !isDestroyed && epgLoading) {
+                                    epgProgress = percent
+                                    epgProgressText = if (contentLength > 0) "Загрузка телепрограммы: $percent%" else "Загрузка телепрограммы: ${bytes / 1024} КБ"
+                                    updatePlaybackBar()
+                                }
+                            }
+                        }
+                        override fun read(): Int { val value = super.read(); if (value >= 0) report(1); return value }
+                        override fun read(b: ByteArray, off: Int, len: Int): Int { val count = super.read(b, off, len); report(count); return count }
+                    }
+                    // Потоковая загрузка: не держим весь XML-файл в оперативной памяти.
+                    val source = java.io.BufferedInputStream(rawStream)
                     source.mark(2)
                     val first = source.read()
                     val second = source.read()
@@ -395,20 +433,37 @@ class MainActivity : AppCompatActivity() {
                     val xmlStream: java.io.InputStream = if (isGzip) {
                         java.util.zip.GZIPInputStream(LimitedInputStream(source, 64L * 1024L * 1024L))
                     } else source
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) {
+                            epgProgress = 0
+                            epgProgressText = "Разбор телепрограммы…"
+                            updatePlaybackBar()
+                        }
+                    }
                     LimitedInputStream(xmlStream, 256L * 1024L * 1024L).use { EpgParser.parse(it) }
                 }
+                val byId = programmes.groupBy { it.channelId.lowercase(Locale.ROOT) }
+                val byName = programmes.flatMap { p -> p.channelNames.map { normalizeEpgName(it) to p } }
+                    .groupBy({ it.first }, { it.second })
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     epgProgrammes = programmes
+                    epgById = byId
+                    epgByName = byName
                     epgLoading = false
+                    epgProgress = 100
+                    epgProgressText = "Телепрограмма загружена"
                     updatePlaybackBar()
+                    showPlaybackBarForFiveSeconds()
                     toast("EPG загружен: ${programmes.size} передач")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     epgLoading = false
+                    epgProgressText = "Ошибка загрузки телепрограммы"
                     updatePlaybackBar()
+                    showPlaybackBarForFiveSeconds()
                     toast("Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
                 }
             }
@@ -439,11 +494,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun findCurrentAndNext(channel: TvChannel): Pair<EpgProgramme, EpgProgramme?>? {
         val now = System.currentTimeMillis()
-        val candidates = epgProgrammes.asSequence().filter { programme ->
-            val idMatch = !channel.tvgId.isNullOrBlank() && programme.channelId.equals(channel.tvgId, true)
-            val nameMatch = programme.channelNames.any { normalizeEpgName(it) == normalizeEpgName(channel.name) }
-            idMatch || nameMatch
-        }.sortedBy { it.startMillis }.toList()
+        val candidates = if (!channel.tvgId.isNullOrBlank()) {
+            epgById[channel.tvgId.lowercase(Locale.ROOT)].orEmpty()
+        } else {
+            epgByName[normalizeEpgName(channel.name)].orEmpty()
+        }
         val current = candidates.firstOrNull { now >= it.startMillis && now < it.endMillis } ?: return null
         val next = candidates.firstOrNull { it.startMillis >= current.endMillis }
         return current to next
