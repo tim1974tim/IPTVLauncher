@@ -48,6 +48,9 @@ class MainActivity : AppCompatActivity() {
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
     private var epgByName: Map<String, List<EpgProgramme>> = emptyMap()
     private var groups = listOf<String>()
+    // Индексы каналов заранее группируются, чтобы не фильтровать весь плейлист при каждом нажатии.
+    private var channelIndicesByGroup: Map<String, List<Int>> = emptyMap()
+    private var allChannelIndices: List<Int> = emptyList()
     private var groupIndex = 0
     private var selectedChannel = 0
     private var browserVisible = false
@@ -410,9 +413,11 @@ class MainActivity : AppCompatActivity() {
         setupFocusIndex = 0
         channels.clear()
         channels.addAll(parsed)
+        channelIndicesByGroup = channels.indices.groupBy { channels[it].group }
+        allChannelIndices = channels.indices.toList()
         groups = buildList {
             if (prefs.getBoolean("show_all_channels", true)) add("Все каналы")
-            addAll(channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") })
+            addAll(channelIndicesByGroup.keys.ifEmpty { listOf("Без категории") })
         }
         groupIndex = 0
         val index = resolveLastChannelIndex(channels, restoreIndex)
@@ -684,8 +689,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun indicesForCurrentGroup(): List<Int> {
         val category = groups.getOrNull(groupIndex) ?: return emptyList()
-        return if (category == "Все каналы") channels.indices.toList()
-        else channels.indices.filter { channels[it].group == category }
+        return if (category == "Все каналы") allChannelIndices
+        else channelIndicesByGroup[category].orEmpty()
     }
 
     private fun changeChannelInGroup(direction: Int) {
@@ -749,7 +754,15 @@ class MainActivity : AppCompatActivity() {
         channelList.addView(label("${groups.getOrNull(groupIndex) ?: "КАНАЛЫ"}  •  КАНАЛЫ", 20f))
         val indices = indicesForCurrentGroup()
         var selectedRow: View? = null
-        indices.forEach { index ->
+        // Не создаём тысячи View одновременно: это перегружает главный поток и приводит к зависанию.
+        // Показываем окно вокруг выбранного канала; полный индексный список остаётся доступен для навигации.
+        val selectedPosition = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
+        val windowStart = (selectedPosition - 40).coerceAtLeast(0)
+        val windowEnd = (selectedPosition + 41).coerceAtMost(indices.size)
+        if (windowStart > 0 || windowEnd < indices.size) {
+            channelList.addView(label("Каналы ${windowStart + 1}–$windowEnd из ${indices.size}", 14f))
+        }
+        indices.subList(windowStart, windowEnd).forEach { index ->
             val isSelected = index == selectedChannel
             val row = button((if (isSelected) "▶  " else "   ") + channels[index].name) {
                 selectedChannel = index
