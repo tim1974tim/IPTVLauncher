@@ -29,6 +29,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var programmeDetails: LinearLayout
     private lateinit var playbackBar: LinearLayout
     private val statusHandler = Handler(Looper.getMainLooper())
+    private var okLongPressTriggered = false
+    private val longOkRunnable = Runnable { if (!browserVisible && channels.isNotEmpty()) { okLongPressTriggered = true; showAppearanceSettings() } }
+    private val palettes = listOf(
+        intArrayOf(0xFF174A70.toInt(), 0xFF39D7FF.toInt(), 0xFF202A3A.toInt()),
+        intArrayOf(0xFF245C3A.toInt(), 0xFF70E09A.toInt(), 0xFF1B3025.toInt()),
+        intArrayOf(0xFF633A78.toInt(), 0xFFD49BFF.toInt(), 0xFF302039.toInt()),
+        intArrayOf(0xFF76501F.toInt(), 0xFFFFC45C.toInt(), 0xFF382B1B.toInt()),
+        intArrayOf(0xFF71343A.toInt(), 0xFFFF858D.toInt(), 0xFF382126.toInt()),
+        intArrayOf(0xFF17656A.toInt(), 0xFF66E6E0.toInt(), 0xFF1B3335.toInt()),
+        intArrayOf(0xFF3F4D86.toInt(), 0xFF9EADFF.toInt(), 0xFF252B45.toInt()),
+        intArrayOf(0xFF66513B.toInt(), 0xFFE3C49A.toInt(), 0xFF332B23.toInt()),
+        intArrayOf(0xFF4D5964.toInt(), 0xFFC5D5E3.toInt(), 0xFF28323B.toInt()),
+        intArrayOf(0xFF7A3E66.toInt(), 0xFFFF9ACB.toInt(), 0xFF3B2533.toInt())
+    )
     private val hideStatusRunnable = Runnable { if (!browserVisible && ::playbackBar.isInitialized) playbackBar.visibility = View.GONE }
     private lateinit var urlInput: EditText
     private lateinit var epgInput: EditText
@@ -108,12 +122,13 @@ class MainActivity : AppCompatActivity() {
         playbackBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(4), dp(18), dp(6))
-            setBackgroundColor(0xD9000000.toInt())
+            setBackgroundColor(statusBackgroundColor())
             visibility = View.GONE
         }
-        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(176), Gravity.BOTTOM).apply {
-            bottomMargin = dp(28)
+        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp((176 * statusSizeScale()).toInt()), statusGravity()).apply {
+            if (statusAtTop()) topMargin = dp(28) else bottomMargin = dp(28)
         })
+        applyStatusAppearance()
         setContentView(root)
 
         val savedUrl = prefs.getString("playlist_url", null)
@@ -461,8 +476,8 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        categoryColumn.addView(statusText(category, 28f))
-        categoryColumn.addView(statusText("Канал ${position + 1} из ${inGroup.size}", 24f).apply {
+        categoryColumn.addView(statusText(category, 28f * statusSizeScale()))
+        categoryColumn.addView(statusText("Канал ${position + 1} из ${inGroup.size}", 24f * statusSizeScale()).apply {
             setTextColor(0xFFB8C0CC.toInt())
         })
         row.addView(categoryColumn, LinearLayout.LayoutParams(dp(250), -1))
@@ -472,7 +487,7 @@ class MainActivity : AppCompatActivity() {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 tag = channel.logo
             }
-            row.addView(logoView, LinearLayout.LayoutParams(dp(104), dp(104)).apply {
+            row.addView(logoView, LinearLayout.LayoutParams(dp((104 * statusSizeScale()).toInt()), dp((104 * statusSizeScale()).toInt())).apply {
                 rightMargin = dp(20)
             })
             val logoUrl = channel.logo!!
@@ -492,18 +507,18 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        details.addView(statusText(channel.name, 36f).apply { maxLines = 1 })
+        details.addView(statusText(channel.name, 36f * statusSizeScale()).apply { maxLines = 1 })
         val programme = findCurrentAndNext(channel)?.first
         val programmeText = when {
             epgLoading -> "${epgProgressText.ifBlank { "Загрузка телепрограммы" }}"
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
         }
-        details.addView(statusText(programmeText, 28f).apply {
+        details.addView(statusText(programmeText, 28f * statusSizeScale()).apply {
             setTextColor(0xFFD0D5DE.toInt())
             maxLines = 2
         })
-        row.addView(details, LinearLayout.LayoutParams(0, dp(132), 1f))
+        row.addView(details, LinearLayout.LayoutParams(0, dp((132 * statusSizeScale()).toInt()), 1f))
         playbackBar.addView(row, LinearLayout.LayoutParams(-1, 0, 1f))
 
         if (epgLoading) {
@@ -746,15 +761,15 @@ class MainActivity : AppCompatActivity() {
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                     backgroundTintList = null
                     background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(0xFF174A70.toInt())
+                        setColor(currentPalette()[0])
                         setCornerRadius(dp(9).toFloat())
-                        setStroke(dp(3), 0xFF39D7FF.toInt())
+                        setStroke(dp(3), currentPalette()[1])
                     }
                     elevation = dp(4).toFloat()
                 } else {
                     setTextColor(0xFFE0E7F0.toInt())
                     setTypeface(typeface, android.graphics.Typeface.NORMAL)
-                    setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
+                    setBackgroundTintList(android.content.res.ColorStateList.valueOf(currentPalette()[2]))
                     elevation = 0f
                 }
             }
@@ -822,6 +837,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == KeyEvent.KEYCODE_ENTER) {
+            if (!browserVisible && channels.isNotEmpty() && optionsWrapper == null) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    if (event.repeatCount == 0) { okLongPressTriggered = false; statusHandler.postDelayed(longOkRunnable, 3000L) }
+                    return true
+                }
+                if (event.action == KeyEvent.ACTION_UP) {
+                    statusHandler.removeCallbacks(longOkRunnable)
+                    if (okLongPressTriggered) { okLongPressTriggered = false; return true }
+                    return true
+                }
+            }
+        }
         if (event.action == KeyEvent.ACTION_DOWN) {
             val keyCode = event.keyCode
             // На экране первоначальной настройки явно переводим фокус между полем URL и кнопками.
@@ -922,6 +950,48 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun statusAtTop() = prefs.getBoolean("status_top", false)
+    private fun statusSizeScale() = when (prefs.getString("status_size", "large")) { "medium" -> 0.8f; "small" -> 0.5f; else -> 1f }
+    private fun statusAlpha() = prefs.getInt("status_alpha", 85).coerceIn(20, 100)
+    private fun statusBackgroundColor(): Int { val a = (statusAlpha() * 255 / 100) shl 24; return a or 0x00000000 }
+    private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
+    private fun currentPalette() = palettes[prefs.getInt("channel_palette", 0).coerceIn(0, palettes.lastIndex)]
+
+    private fun applyStatusAppearance() {
+        if (!::playbackBar.isInitialized) return
+        playbackBar.setBackgroundColor(statusBackgroundColor())
+        val lp = playbackBar.layoutParams as? FrameLayout.LayoutParams ?: return
+        lp.height = dp((176 * statusSizeScale()).toInt())
+        lp.gravity = statusGravity()
+        lp.topMargin = if (statusAtTop()) dp(28) else 0
+        lp.bottomMargin = if (statusAtTop()) 0 else dp(28)
+        playbackBar.layoutParams = lp
+        if (channels.isNotEmpty()) updatePlaybackBar()
+    }
+
+    private fun showAppearanceSettings() {
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(8)) }
+        lateinit var dialog: android.app.AlertDialog
+        fun heading(t: String) { panel.addView(TextView(this).apply { text=t; textSize=16f; setTextColor(0xFF9ECFFF.toInt()); setPadding(0,dp(8),0,dp(4)) }) }
+        fun action(t: String, run: () -> Unit) { panel.addView(Button(this).apply { text=t; isAllCaps=false; minHeight=dp(48); setOnClickListener { run(); dialog.dismiss() } }) }
+        heading("Положение статус-бара")
+        action(if (statusAtTop()) "Сейчас сверху — переместить вниз" else "Сейчас снизу — переместить вверх") { prefs.edit().putBoolean("status_top", !statusAtTop()).apply(); applyStatusAppearance() }
+        heading("Размер статус-бара")
+        action("Большой (100%)") { prefs.edit().putString("status_size","large").apply(); applyStatusAppearance() }
+        action("Средний (на 20% меньше)") { prefs.edit().putString("status_size","medium").apply(); applyStatusAppearance() }
+        action("Малый (на 50% меньше)") { prefs.edit().putString("status_size","small").apply(); applyStatusAppearance() }
+        heading("Прозрачность: ${statusAlpha()}%")
+        panel.addView(SeekBar(this).apply { max=80; progress=statusAlpha()-20; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { if(fromUser) { prefs.edit().putInt("status_alpha",progress+20).apply(); applyStatusAppearance() } }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        }) })
+        heading("Цветовая палитра списка каналов")
+        palettes.indices.forEach { i -> action("Палитра ${i+1}" + if (prefs.getInt("channel_palette",0)==i) " ✓" else "") { prefs.edit().putInt("channel_palette",i).apply(); if(browserVisible) refreshChannels() } }
+        dialog = android.app.AlertDialog.Builder(this).setTitle("Дополнительные настройки").setView(ScrollView(this).apply { addView(panel) }).setNegativeButton("Закрыть", null).create()
+        dialog.show()
     }
 
     @Deprecated("Deprecated in Android")
