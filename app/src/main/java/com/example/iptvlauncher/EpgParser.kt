@@ -5,6 +5,7 @@ import org.xmlpull.v1.XmlPullParser
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.io.InputStream
 
 data class EpgProgramme(
     val channelId: String,
@@ -20,9 +21,9 @@ data class EpgProgramme(
 }
 
 object EpgParser {
-    fun parse(xml: ByteArray): List<EpgProgramme> {
+    fun parse(xml: InputStream): List<EpgProgramme> {
         val parser = Xml.newPullParser()
-        parser.setInput(xml.inputStream(), null)
+        parser.setInput(xml, null)
         val names = mutableMapOf<String, MutableList<String>>()
         val result = mutableListOf<EpgProgramme>()
         var event = ""

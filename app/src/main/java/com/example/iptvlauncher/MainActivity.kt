@@ -81,7 +81,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xD9000000.toInt())
             visibility = View.GONE
         }
-        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(88), Gravity.BOTTOM))
+        root.addView(playbackBar, FrameLayout.LayoutParams(-1, dp(176), Gravity.BOTTOM))
         setContentView(root)
 
         val savedUrl = prefs.getString("playlist_url", null)
@@ -382,18 +382,20 @@ class MainActivity : AppCompatActivity() {
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
                     if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
                     val body = response.body ?: throw java.io.IOException("Пустой ответ EPG")
-                    // Ограничиваем чтение до выделения памяти: некоторые XMLTV-файлы
-                    // распаковываются в сотни мегабайт и могут завершить приложение на ТВ-боксе.
-                    val rawBytes = body.byteStream().use { readLimited(it, 32L * 1024L * 1024L) }
+                    // Читаем XMLTV потоком, не загружая весь распакованный файл в память.
+                    // Лимиты: до 64 МБ для gzip и до 256 МБ для XML после распаковки.
+                    val source = java.io.BufferedInputStream(body.byteStream())
+                    source.mark(2)
+                    val first = source.read()
+                    val second = source.read()
+                    source.reset()
                     val isGzip = url.substringBefore('?').endsWith(".gz", true) ||
                         response.header("Content-Encoding")?.contains("gzip", true) == true ||
-                        (rawBytes.size >= 2 && rawBytes[0] == 0x1f.toByte() && rawBytes[1] == 0x8b.toByte())
-                    val xmlBytes = if (isGzip) {
-                        java.util.zip.GZIPInputStream(rawBytes.inputStream()).use {
-                            readLimited(it, 48L * 1024L * 1024L)
-                        }
-                    } else rawBytes
-                    EpgParser.parse(xmlBytes)
+                        (first == 0x1f && second == 0x8b)
+                    val xmlStream: java.io.InputStream = if (isGzip) {
+                        java.util.zip.GZIPInputStream(LimitedInputStream(source, 64L * 1024L * 1024L))
+                    } else source
+                    LimitedInputStream(xmlStream, 256L * 1024L * 1024L).use { EpgParser.parse(it) }
                 }
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
@@ -413,18 +415,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun readLimited(input: java.io.InputStream, maxBytes: Long): ByteArray {
-        val output = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        var total = 0L
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            total += count
-            if (total > maxBytes) throw java.io.IOException("Файл EPG слишком большой (лимит ${maxBytes / (1024 * 1024)} МБ)")
-            output.write(buffer, 0, count)
+    private class LimitedInputStream(input: java.io.InputStream, private val maxBytes: Long) : java.io.FilterInputStream(input) {
+        private var total = 0L
+        override fun read(): Int {
+            val value = super.read()
+            if (value >= 0 && ++total > maxBytes) throw java.io.IOException(
+                "Файл EPG слишком большой (лимит ${maxBytes / (1024 * 1024)} МБ)"
+            )
+            return value
         }
-        return output.toByteArray()
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val allowed = minOf(length.toLong(), (maxBytes - total + 1L).coerceAtLeast(1L)).toInt()
+            val count = super.read(buffer, offset, allowed)
+            if (count > 0) {
+                total += count
+                if (total > maxBytes) throw java.io.IOException(
+                    "Файл EPG слишком большой (лимит ${maxBytes / (1024 * 1024)} МБ)"
+                )
+            }
+            return count
+        }
     }
 
     private fun findCurrentAndNext(channel: TvChannel): Pair<EpgProgramme, EpgProgramme?>? {
