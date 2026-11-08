@@ -15,6 +15,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.ui.PlayerView
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -43,7 +45,11 @@ class MainActivity : AppCompatActivity() {
         intArrayOf(0xFF4D5964.toInt(), 0xFFC5D5E3.toInt(), 0xFF28323B.toInt()),
         intArrayOf(0xFF7A3E66.toInt(), 0xFFFF9ACB.toInt(), 0xFF3B2533.toInt())
     )
-    private val hideStatusRunnable = Runnable { if (!browserVisible && ::playbackBar.isInitialized) playbackBar.visibility = View.GONE }
+    private val hideStatusRunnable = Runnable {
+        if (!browserVisible && !isChannelBuffering && ::playbackBar.isInitialized) {
+            playbackBar.visibility = View.GONE
+        }
+    }
     private lateinit var urlInput: EditText
     private lateinit var epgInput: EditText
     private var setupLoadButton: Button? = null
@@ -59,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var allPlaylistChannels: List<TvChannel> = emptyList()
     private var epgProgrammes: List<EpgProgramme> = emptyList()
     private var epgLoading = false
+    private var isChannelBuffering = false
     private var epgProgress = 0
     private var epgProgressText = ""
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
@@ -106,11 +113,39 @@ class MainActivity : AppCompatActivity() {
         // Не давать Android TV включать системную заставку во время работы плеера.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = 5894 or 1024 or 512
-        player = ExoPlayer.Builder(this).build()
+        // Увеличенные сетевые таймауты для IPTV-потоков, включая HLS.
+        val streamDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(45_000)
+            .setReadTimeoutMs(120_000)
+            .setAllowCrossProtocolRedirects(true)
+        player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(streamDataSourceFactory))
+            .build()
         player.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                isChannelBuffering = playbackState == androidx.media3.common.Player.STATE_BUFFERING
+                if (::playbackBar.isInitialized && channels.isNotEmpty() && !browserVisible) {
+                    updatePlaybackBar()
+                    if (isChannelBuffering) {
+                        statusHandler.removeCallbacks(hideStatusRunnable)
+                        playbackBar.visibility = View.VISIBLE
+                    } else if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                        playbackBar.visibility = View.VISIBLE
+                        statusHandler.removeCallbacks(hideStatusRunnable)
+                        statusHandler.postDelayed(hideStatusRunnable, 3_000L)
+                    }
+                }
+            }
+
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                isChannelBuffering = false
                 runOnUiThread {
                     toast("Ошибка воспроизведения: ${error.errorCodeName}")
+                    if (::playbackBar.isInitialized && !browserVisible) {
+                        updatePlaybackBar()
+                        statusHandler.removeCallbacks(hideStatusRunnable)
+                        statusHandler.postDelayed(hideStatusRunnable, 3_000L)
+                    }
                 }
             }
         })
@@ -285,9 +320,9 @@ class MainActivity : AppCompatActivity() {
         thread(name = "playlist-download") {
             try {
                 val client = OkHttpClient.Builder()
-                    .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
-                    .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                    .connectTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(180, java.util.concurrent.TimeUnit.SECONDS)
+                    .callTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
                 val data = client.newCall(Request.Builder().url(parsedUrl)
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
@@ -458,12 +493,15 @@ class MainActivity : AppCompatActivity() {
         groupIndex = groups.indexOf(channels[index].group).coerceAtLeast(0)
         prefs.edit().putInt("last_channel", index).apply()
         saveLastChannelIdentity()
+        isChannelBuffering = true
+        statusHandler.removeCallbacks(hideStatusRunnable)
+        playbackBar.visibility = View.VISIBLE
         player.setMediaItem(MediaItem.fromUri(channels[index].url))
         player.prepare()
         player.playWhenReady = true
         closeBrowser()
         updatePlaybackBar()
-        showPlaybackBarForFiveSeconds()
+        showPlaybackBarForThreeSeconds()
     }
 
     private fun updatePlaybackBar() {
@@ -516,6 +554,7 @@ class MainActivity : AppCompatActivity() {
         details.addView(statusText(channel.name, 36f * statusSizeScale()).apply { maxLines = 1 })
         val programme = findCurrentAndNext(channel)?.first
         val programmeText = when {
+            isChannelBuffering -> "Загрузка канала…"
             epgLoading -> "${epgProgressText.ifBlank { "Загрузка телепрограммы" }}"
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
@@ -527,11 +566,11 @@ class MainActivity : AppCompatActivity() {
         row.addView(details, LinearLayout.LayoutParams(0, dp((132 * statusSizeScale()).toInt()), 1f))
         playbackBar.addView(row, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        if (epgLoading) {
+        if (isChannelBuffering || epgLoading) {
             val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                 max = 100
                 progress = epgProgress.coerceIn(0, 100)
-                isIndeterminate = epgProgress <= 0
+                isIndeterminate = isChannelBuffering || epgProgress <= 0
             }
             playbackBar.addView(progress, LinearLayout.LayoutParams(-1, dp(10)).apply {
                 topMargin = dp(4)
@@ -539,11 +578,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showPlaybackBarForFiveSeconds() {
+    private fun showPlaybackBarForThreeSeconds() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         if (!browserVisible && channels.isNotEmpty()) {
             playbackBar.visibility = View.VISIBLE
-            if (!epgLoading) statusHandler.postDelayed(hideStatusRunnable, 5_000L)
+            if (!isChannelBuffering) statusHandler.postDelayed(hideStatusRunnable, 3_000L)
         }
     }
 
@@ -572,9 +611,9 @@ class MainActivity : AppCompatActivity() {
         thread(name = "epg-download") {
             try {
                 val client = OkHttpClient.Builder()
-                    .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
-                    .callTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                    .connectTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
+                    .callTimeout(600, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
                 val programmes = client.newCall(Request.Builder().url(url)
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
@@ -634,7 +673,7 @@ class MainActivity : AppCompatActivity() {
                     epgProgressText = "Телепрограмма загружена"
                     updatePlaybackBar()
                     refreshProgrammeDetails()
-                    showPlaybackBarForFiveSeconds()
+                    showPlaybackBarForThreeSeconds()
                     toast("EPG загружен: ${programmes.size} передач")
                 }
             } catch (e: Exception) {
@@ -644,7 +683,7 @@ class MainActivity : AppCompatActivity() {
                     epgProgressText = "Ошибка загрузки телепрограммы"
                     updatePlaybackBar()
                     refreshProgrammeDetails()
-                    showPlaybackBarForFiveSeconds()
+                    showPlaybackBarForThreeSeconds()
                     toast("Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
                 }
             }
