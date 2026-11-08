@@ -55,6 +55,8 @@ class MainActivity : AppCompatActivity() {
     private var pendingRestoreIndex: Int = 0
     private lateinit var player: ExoPlayer
     private val channels = mutableListOf<TvChannel>()
+    // Полный исходный плейлист хранится отдельно от отображаемых каналов, включая скрытые категории.
+    private var allPlaylistChannels: List<TvChannel> = emptyList()
     private var epgProgrammes: List<EpgProgramme> = emptyList()
     private var epgLoading = false
     private var epgProgress = 0
@@ -141,6 +143,7 @@ class MainActivity : AppCompatActivity() {
                         val parsed = runCatching { M3uParser.parse(cache.readText()) }.getOrDefault(emptyList())
                         runOnUiThread {
                             if (parsed.isNotEmpty()) {
+                                allPlaylistChannels = parsed
                                 val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
                                 val visible = parsed.filter { it.group !in hidden }
                                 applyPlaylist(visible.ifEmpty { parsed }, prefs.getInt("last_channel", 0))
@@ -252,6 +255,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (!data.isNullOrBlank()) {
                         val parsed = M3uParser.parse(data)
+                        allPlaylistChannels = parsed
                         val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
                         val visible = parsed.filter { it.group !in hidden }
                         if (visible.isNotEmpty()) applyPlaylist(visible, prefs.getInt("last_channel", 0))
@@ -298,6 +302,7 @@ class MainActivity : AppCompatActivity() {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     if (parsed.isEmpty()) toast("В ответе сервера не найдены каналы M3U")
                     else {
+                        allPlaylistChannels = parsed
                         prefs.edit().putString("playlist_url", parsedUrl).remove("playlist_uri").apply()
                         prefs.edit().putLong("playlist_updated_at", System.currentTimeMillis()).apply()
                         if (showOptions) showPlaylistOptions(parsed, restoreIndex) else {
@@ -321,13 +326,14 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (parsed.isEmpty()) toast("В плейлисте не найдены каналы")
-                else showPlaylistOptions(parsed, 0)
+                else { allPlaylistChannels = parsed; showPlaylistOptions(parsed, 0) }
             }
         }
     }
 
     private fun showPlaylistOptions(parsed: List<TvChannel>, restoreIndex: Int) {
         pendingPlaylist = parsed
+        allPlaylistChannels = parsed
         pendingRestoreIndex = restoreIndex
         setupWrapper?.let { root.removeView(it) }
         setupWrapper = null
@@ -402,7 +408,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyPlaylist(parsed: List<TvChannel>, restoreIndex: Int) {
+    private fun applyPlaylist(parsed: List<TvChannel>, restoreIndex: Int, reloadEpg: Boolean = true) {
         if (parsed.isEmpty()) { toast("В плейлисте не найдены каналы"); return }
         setupWrapper?.let { root.removeView(it) }
         setupWrapper = null
@@ -419,7 +425,7 @@ class MainActivity : AppCompatActivity() {
         selectedChannel = index
         playChannel(index)
         updatePlaybackBar()
-        loadEpgIfConfigured()
+        if (reloadEpg) loadEpgIfConfigured()
         toast("Загружено каналов: ${channels.size}")
     }
 
@@ -972,10 +978,59 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAppearanceSettings() {
-        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(8)) }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(18), dp(22), dp(18))
+            setBackgroundColor(0xFF0B1220.toInt())
+        }
         lateinit var dialog: android.app.AlertDialog
-        fun heading(t: String) { panel.addView(TextView(this).apply { text=t; textSize=16f; setTextColor(0xFF9ECFFF.toInt()); setPadding(0,dp(8),0,dp(4)) }) }
-        fun action(t: String, run: () -> Unit) { panel.addView(Button(this).apply { text=t; isAllCaps=false; minHeight=dp(48); setOnClickListener { run(); dialog.dismiss() } }) }
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                colors = intArrayOf(0xFF173B61.toInt(), 0xFF10243D.toInt())
+                orientation = android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), 0xFF347FB8.toInt())
+            }
+            addView(TextView(this@MainActivity).apply {
+                text = "✦  IPTV LAUNCHER"
+                textSize = 21f; setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(0xFFFFFFFF.toInt())
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Быстрые настройки просмотра"
+                textSize = 13f; setTextColor(0xFFB8D8F5.toInt()); setPadding(0, dp(4), 0, 0)
+            })
+        }
+        panel.addView(hero, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+        fun heading(t: String) {
+            panel.addView(TextView(this).apply {
+                text = t.uppercase(); textSize = 12f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(0xFF70C8FF.toInt())
+                setPadding(dp(4), dp(14), 0, dp(5))
+            })
+        }
+        fun action(t: String, run: () -> Unit) {
+            panel.addView(Button(this).apply {
+                text = t; isAllCaps = false; textSize = 15f
+                setTextColor(0xFFF2F7FF.toInt())
+                minHeight = dp(50); isFocusable = true; isFocusableInTouchMode = true
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFF18283B.toInt()); cornerRadius = dp(10).toFloat()
+                    setStroke(dp(1), 0xFF35516D.toInt())
+                }
+                setOnFocusChangeListener { v, focused ->
+                    v.background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(if (focused) 0xFF20527A.toInt() else 0xFF18283B.toInt())
+                        cornerRadius = dp(10).toFloat()
+                        setStroke(dp(if (focused) 2 else 1), if (focused) 0xFF52C8FF.toInt() else 0xFF35516D.toInt())
+                    }
+                }
+                setOnClickListener { run(); dialog.dismiss() }
+            }.also { it.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) } })
+        }
         heading("Положение статус-бара")
         action(if (statusAtTop()) "Сейчас сверху — переместить вниз" else "Сейчас снизу — переместить вверх") { prefs.edit().putBoolean("status_top", !statusAtTop()).apply(); applyStatusAppearance() }
         heading("Размер статус-бара")
@@ -1012,6 +1067,10 @@ class MainActivity : AppCompatActivity() {
             panel.addView(preview)
         }
         heading("Настройки адресов плейлиста и EPG")
+        val currentM3u = prefs.getString("playlist_url", "")?.takeIf { it.isNotBlank() } ?: "Локальный файл / не задан"
+        val currentEpg = prefs.getString("epg_url", "")?.takeIf { it.isNotBlank() } ?: "Не задан"
+        panel.addView(statusText("Текущий плейлист: $currentM3u", 14f))
+        panel.addView(statusText("Текущий EPG: $currentEpg", 14f))
         action("Изменить адреса M3U и EPG") {
             val url = EditText(this).apply { hint = "Адрес M3U"; setSingleLine(true); setText(prefs.getString("playlist_url", "") ?: "") }
             val epg = EditText(this).apply { hint = "Адрес EPG"; setSingleLine(true); setText(prefs.getString("epg_url", "") ?: "") }
@@ -1024,14 +1083,70 @@ class MainActivity : AppCompatActivity() {
                     else toast("Адреса сохранены. Для локального плейлиста выберите файл в первоначальных настройках.")
                 }.show()
         }
+        action("Обновить EPG вручную") {
+            loadEpgIfConfigured()
+            toast("Запущено ручное обновление EPG")
+        }
         action("Выбор категорий плейлиста") {
-            if (channels.isNotEmpty()) showPlaylistOptions(channels.toList(), selectedChannel)
+            val source = allPlaylistChannels.ifEmpty { channels.toList() }
+            if (source.isNotEmpty()) showCategorySettings(source)
         }
         action("Открыть настройки приставки") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
                 .onFailure { toast("Не удалось открыть настройки приставки") }
         }
-        dialog = android.app.AlertDialog.Builder(this).setTitle("Дополнительные настройки").setView(ScrollView(this).apply { addView(panel) }).setNegativeButton("Закрыть", null).create()
+        dialog = android.app.AlertDialog.Builder(this)
+            .setView(ScrollView(this).apply {
+                isFillViewport = true
+                setBackgroundColor(0xFF0B1220.toInt())
+                addView(panel)
+            })
+            .setNegativeButton("ЗАКРЫТЬ", null)
+            .create()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.show()
+        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.78f).toInt(), (resources.displayMetrics.heightPixels * 0.88f).toInt())
+        dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE)?.setTextColor(0xFF70C8FF.toInt())
+    }
+
+    private fun showCategorySettings(source: List<TvChannel>) {
+        val allGroups = source.map { it.group }.distinct()
+        val hidden = (prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()).toMutableSet()
+        // Include saved hidden categories even if the current visible channel list does not contain them.
+        val groupsToShow = (allGroups + hidden).distinct()
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(12), dp(18), dp(12)) }
+        panel.addView(label("Все категории плейлиста", 20f))
+        val scroll = ScrollView(this)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        groupsToShow.forEach { group ->
+            val cb = CheckBox(this).apply {
+                text = group; textSize = 18f; setTextColor(0xFFFFFFFF.toInt())
+                buttonTintList = android.content.res.ColorStateList.valueOf(0xFF39D7FF.toInt())
+                isChecked = group !in hidden; isFocusable = true; isFocusableInTouchMode = true
+                minHeight = dp(48); tag = group
+            }
+            list.addView(cb)
+        }
+        scroll.addView(list)
+        panel.addView(scroll, LinearLayout.LayoutParams(dp(520), dp(420)))
+        val dialog = android.app.AlertDialog.Builder(this).setTitle("Выбор категорий")
+            .setView(panel)
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Сохранить", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val newHidden = groupsToShow.filter { group ->
+                    val cb = (0 until list.childCount).map { list.getChildAt(it) as CheckBox }.first { it.tag == group }
+                    !cb.isChecked
+                }.toMutableSet()
+                val filtered = source.filter { it.group !in newHidden }
+                if (filtered.isEmpty()) { toast("Оставьте включённой хотя бы одну категорию"); return@setOnClickListener }
+                prefs.edit().putStringSet("hidden_groups", newHidden).apply()
+                dialog.dismiss()
+                // Меняется только фильтр отображения. Ни плейлист, ни EPG не загружаются повторно.
+                applyPlaylist(filtered, selectedChannel, reloadEpg = false)
+            }
+        }
         dialog.show()
     }
 
