@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var allPlaylistChannels: List<TvChannel> = emptyList()
     private var epgProgrammes: List<EpgProgramme> = emptyList()
     private var epgLoading = false
+    @Volatile private var epgRequestInProgress = false
     private var isChannelBuffering = false
     private var epgProgress = 0
     private var epgProgressText = ""
@@ -586,7 +587,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadEpgIfConfigured() {
+    /** Загружает сохранённый EPG сразу, а сеть использует только если кэш отсутствует,
+     * адрес источника изменился или истёк выбранный интервал автообновления. */
+    private fun loadEpgIfConfigured(force: Boolean = false) {
         val url = prefs.getString("epg_url", "")?.trim().orEmpty()
         if (url.isBlank()) {
             epgProgrammes = emptyList()
@@ -602,67 +605,128 @@ class MainActivity : AppCompatActivity() {
             updatePlaybackBar()
             return
         }
+        if (epgRequestInProgress) return
+        epgRequestInProgress = true
         epgLoading = true
         epgProgress = 0
-        epgProgressText = "Загрузка телепрограммы…"
+        epgProgressText = "Проверка сохранённой телепрограммы…"
         statusHandler.removeCallbacks(hideStatusRunnable)
-        playbackBar.visibility = View.VISIBLE
+        if (::playbackBar.isInitialized) playbackBar.visibility = View.VISIBLE
         updatePlaybackBar()
-        thread(name = "epg-download") {
+
+        thread(name = "epg-cache-check") {
+            val cacheFile = java.io.File(filesDir, "epg_cache.xmltv")
+            val cachedUrl = prefs.getString("epg_cached_url", null)
+            val cacheExists = cacheFile.exists() && cacheFile.length() > 0L && cachedUrl == url
+            val intervalHours = prefs.getInt("playlist_interval_hours", 24).coerceIn(12, 48)
+            val lastUpdate = prefs.getLong("epg_updated_at", 0L)
+            val intervalMs = intervalHours * 60L * 60L * 1000L
+            val isFresh = cacheExists && lastUpdate > 0L &&
+                System.currentTimeMillis() - lastUpdate < intervalMs
+
+            // Сначала читаем локальную копию: телепрограмма доступна даже без интернета.
+            if (cacheExists) {
+                try {
+                    val cachedProgrammes = parseEpgCache(cacheFile)
+                    val cachedById = cachedProgrammes.groupBy { it.channelId.lowercase(Locale.ROOT) }
+                    val cachedByName = cachedProgrammes.flatMap { p ->
+                        p.channelNames.map { normalizeEpgName(it) to p }
+                    }.groupBy({ it.first }, { it.second })
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) {
+                            epgProgrammes = cachedProgrammes
+                            epgById = cachedById
+                            epgByName = cachedByName
+                            epgLoading = false
+                            epgProgress = 100
+                            epgProgressText = if (isFresh) "Сохранённая телепрограмма актуальна" else "Сохранённая телепрограмма; требуется обновление"
+                            updatePlaybackBar()
+                            refreshProgrammeDetails()
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Повреждённый кэш не используем; ниже попробуем скачать новый.
+                }
+            }
+
+            if (!force && isFresh) {
+                epgRequestInProgress = false
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        epgLoading = false
+                        showPlaybackBarForThreeSeconds()
+                        refreshProgrammeDetails()
+                    }
+                }
+                return@thread
+            }
+
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    epgLoading = true
+                    epgProgress = 0
+                    epgProgressText = if (cacheExists) "Обновление телепрограммы…" else "Загрузка телепрограммы…"
+                    updatePlaybackBar()
+                    refreshProgrammeDetails()
+                }
+            }
+
             try {
                 val client = OkHttpClient.Builder()
                     .connectTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
                     .callTimeout(600, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
-                val programmes = client.newCall(Request.Builder().url(url)
+                val tempFile = java.io.File(filesDir, "epg_cache.tmp")
+                client.newCall(Request.Builder().url(url)
                     .header("User-Agent", "IPTVLauncher/1.0").build()).execute().use { response ->
                     if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
                     val body = response.body ?: throw java.io.IOException("Пустой ответ EPG")
                     val contentLength = body.contentLength()
-                    val downloaded = java.util.concurrent.atomic.AtomicLong(0L)
-                    val rawStream = object : java.io.FilterInputStream(body.byteStream()) {
-                        private fun report(count: Int) {
-                            if (count <= 0) return
-                            val bytes = downloaded.addAndGet(count.toLong())
-                            val percent = if (contentLength > 0) ((bytes * 100L) / contentLength).toInt().coerceIn(0, 99) else 0
-                            if (bytes % (512L * 1024L) < count || percent == 99) runOnUiThread {
-                                if (!isFinishing && !isDestroyed && epgLoading) {
-                                    epgProgress = percent
-                                    epgProgressText = if (contentLength > 0) "Загрузка телепрограммы: $percent%" else "Загрузка телепрограммы: ${bytes / 1024} КБ"
-                                    updatePlaybackBar()
-                                    refreshProgrammeDetails()
+                    var bytes = 0L
+                    body.byteStream().use { input ->
+                        tempFile.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                bytes += count
+                                if (bytes > 64L * 1024L * 1024L) throw java.io.IOException("Файл EPG слишком большой (лимит 64 МБ)")
+                                output.write(buffer, 0, count)
+                                if (bytes % (512L * 1024L) < count) {
+                                    val percent = if (contentLength > 0) ((bytes * 100L) / contentLength).toInt().coerceIn(0, 99) else 0
+                                    runOnUiThread {
+                                        if (!isFinishing && !isDestroyed && epgLoading) {
+                                            epgProgress = percent
+                                            epgProgressText = if (contentLength > 0) "Загрузка телепрограммы: $percent%" else "Загрузка телепрограммы: ${bytes / 1024} КБ"
+                                            updatePlaybackBar()
+                                            refreshProgrammeDetails()
+                                        }
+                                    }
                                 }
                             }
                         }
-                        override fun read(): Int { val value = super.read(); if (value >= 0) report(1); return value }
-                        override fun read(b: ByteArray, off: Int, len: Int): Int { val count = super.read(b, off, len); report(count); return count }
                     }
-                    // Потоковая загрузка: не держим весь XML-файл в оперативной памяти.
-                    val source = java.io.BufferedInputStream(rawStream)
-                    source.mark(2)
-                    val first = source.read()
-                    val second = source.read()
-                    source.reset()
-                    val isGzip = url.substringBefore('?').endsWith(".gz", true) ||
-                        response.header("Content-Encoding")?.contains("gzip", true) == true ||
-                        (first == 0x1f && second == 0x8b)
-                    val xmlStream: java.io.InputStream = if (isGzip) {
-                        java.util.zip.GZIPInputStream(LimitedInputStream(source, 64L * 1024L * 1024L))
-                    } else source
-                    runOnUiThread {
-                        if (!isFinishing && !isDestroyed) {
-                            epgProgress = 0
-                            epgProgressText = "Разбор телепрограммы…"
-                            updatePlaybackBar()
-                            refreshProgrammeDetails()
-                        }
+                }
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        epgProgress = 0
+                        epgProgressText = "Разбор телепрограммы…"
+                        updatePlaybackBar()
+                        refreshProgrammeDetails()
                     }
-                    LimitedInputStream(xmlStream, 256L * 1024L * 1024L).use { EpgParser.parse(it) }
+                }
+                val programmes = parseEpgCache(tempFile)
+                if (programmes.isEmpty()) throw java.io.IOException("В EPG не найдены передачи")
+                if (!tempFile.renameTo(cacheFile)) {
+                    tempFile.copyTo(cacheFile, overwrite = true)
+                    tempFile.delete()
                 }
                 val byId = programmes.groupBy { it.channelId.lowercase(Locale.ROOT) }
                 val byName = programmes.flatMap { p -> p.channelNames.map { normalizeEpgName(it) to p } }
                     .groupBy({ it.first }, { it.second })
+                prefs.edit().putString("epg_cached_url", url)
+                    .putLong("epg_updated_at", System.currentTimeMillis()).apply()
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     epgProgrammes = programmes
@@ -670,23 +734,39 @@ class MainActivity : AppCompatActivity() {
                     epgByName = byName
                     epgLoading = false
                     epgProgress = 100
-                    epgProgressText = "Телепрограмма загружена"
+                    epgProgressText = "Телепрограмма загружена и сохранена"
                     updatePlaybackBar()
                     refreshProgrammeDetails()
                     showPlaybackBarForThreeSeconds()
-                    toast("EPG загружен: ${programmes.size} передач")
+                    toast("EPG обновлён: ${programmes.size} передач")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     epgLoading = false
-                    epgProgressText = "Ошибка загрузки телепрограммы"
+                    epgProgressText = if (cacheExists) "Не удалось обновить EPG; используется сохранённая копия" else "Ошибка загрузки телепрограммы"
                     updatePlaybackBar()
                     refreshProgrammeDetails()
                     showPlaybackBarForThreeSeconds()
-                    toast("Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
+                    toast(if (cacheExists) "Не удалось обновить EPG: ${e.message ?: "ошибка"}. Оставлена старая телепрограмма" else "Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
                 }
+            } finally {
+                epgRequestInProgress = false
             }
+        }
+    }
+
+    /** XMLTV сохраняется в исходном виде; gzip распаковывается потоково при чтении кэша. */
+    private fun parseEpgCache(file: java.io.File): List<EpgProgramme> {
+        java.io.BufferedInputStream(file.inputStream()).use { source ->
+            source.mark(2)
+            val first = source.read()
+            val second = source.read()
+            source.reset()
+            val stream: java.io.InputStream = if (first == 0x1f && second == 0x8b) {
+                java.util.zip.GZIPInputStream(LimitedInputStream(source, 64L * 1024L * 1024L))
+            } else source
+            return LimitedInputStream(stream, 256L * 1024L * 1024L).use { EpgParser.parse(it) }
         }
     }
 
@@ -1123,7 +1203,7 @@ class MainActivity : AppCompatActivity() {
                 }.show()
         }
         action("Обновить EPG вручную") {
-            loadEpgIfConfigured()
+            loadEpgIfConfigured(force = true)
             toast("Запущено ручное обновление EPG")
         }
         action("Выбор категорий плейлиста") {
