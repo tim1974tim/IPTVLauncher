@@ -66,6 +66,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Не давать Android TV включать системную заставку во время работы плеера.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = 5894 or 1024 or 512
         player = ExoPlayer.Builder(this).build()
         player.addListener(object : androidx.media3.common.Player.Listener {
@@ -660,10 +662,17 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(28), dp(18), dp(18), dp(12))
             setBackgroundColor(0xFF111925.toInt())
         }
-        browser.addView(channelScroll, LinearLayout.LayoutParams(0, -1, 0.48f).apply {
+        // Список каналов занимает примерно половину прежней ширины,
+        // освободившееся место отдаём описаниям текущей и следующей передач.
+        browser.addView(channelScroll, LinearLayout.LayoutParams(0, -1, 0.24f).apply {
             rightMargin = dp(12)
         })
-        browser.addView(programmeDetails, LinearLayout.LayoutParams(0, -1, 0.52f))
+        val programmeScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(programmeDetails)
+        }
+        browser.addView(programmeScroll, LinearLayout.LayoutParams(0, -1, 0.76f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
         refreshChannels()
         refreshProgrammeDetails()
@@ -740,9 +749,9 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, dp(6), 0, dp(10))
             })
             if (current.description.isNotBlank()) {
-                programmeDetails.addView(statusText(current.description, 18f).apply {
+                programmeDetails.addView(statusText(current.description, 16f).apply {
                     setTextColor(0xFFD0D5DE.toInt())
-                    setPadding(0, 0, 0, dp(18))
+                    setPadding(0, 0, 0, dp(12))
                 })
             }
             pair.second?.let { next ->
@@ -750,7 +759,7 @@ class MainActivity : AppCompatActivity() {
                 programmeDetails.addView(statusText(next.title, 20f).apply {
                     setPadding(0, dp(6), 0, dp(8))
                 })
-                if (next.description.isNotBlank()) programmeDetails.addView(statusText(next.description, 16f).apply {
+                if (next.description.isNotBlank()) programmeDetails.addView(statusText(next.description, 15f).apply {
                     setTextColor(0xFFB8C0CC.toInt())
                 })
             }
