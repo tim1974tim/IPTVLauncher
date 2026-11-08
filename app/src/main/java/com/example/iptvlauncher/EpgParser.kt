@@ -11,6 +11,7 @@ data class EpgProgramme(
     val channelId: String,
     val channelNames: List<String>,
     val title: String,
+    val description: String = "",
     val startMillis: Long,
     val endMillis: Long
 ) {
@@ -31,6 +32,9 @@ object EpgParser {
         var start = 0L
         var stop = 0L
         var title = ""
+        var description = ""
+        var inDescription = false
+        var descriptionText = StringBuilder()
         var inDisplayName = false
         var inTitle = false
         var displayName = StringBuilder()
@@ -52,6 +56,7 @@ object EpgParser {
                             start = parseXmltvTime(parser.getAttributeValue(null, "start"))
                             stop = parseXmltvTime(parser.getAttributeValue(null, "stop"))
                             title = ""
+                            description = ""
                         }
                         "display-name" -> if (event == "channel") {
                             inDisplayName = true
@@ -61,11 +66,16 @@ object EpgParser {
                             inTitle = true
                             titleText = StringBuilder()
                         }
+                        "desc" -> if (event == "programme") {
+                            inDescription = true
+                            descriptionText = StringBuilder()
+                        }
                     }
                 }
                 XmlPullParser.TEXT -> {
                     if (inDisplayName) displayName.append(parser.text)
                     if (inTitle) titleText.append(parser.text)
+                    if (inDescription) descriptionText.append(parser.text)
                 }
                 XmlPullParser.END_TAG -> {
                     when (parser.name) {
@@ -77,10 +87,14 @@ object EpgParser {
                             title = titleText.toString().trim()
                             inTitle = false
                         }
+                        "desc" -> if (inDescription) {
+                            description = descriptionText.toString().trim()
+                            inDescription = false
+                        }
                         "channel" -> event = ""
                         "programme" -> {
                             if (channelId.isNotBlank() && title.isNotBlank() && start > 0L && stop > start) {
-                                result += EpgProgramme(channelId, names[channelId]?.toList().orEmpty(), title, start, stop)
+                                result += EpgProgramme(channelId, names[channelId]?.toList().orEmpty(), title, description, start, stop)
                             }
                             event = ""
                         }

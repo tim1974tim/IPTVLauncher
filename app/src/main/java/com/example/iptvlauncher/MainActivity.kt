@@ -26,7 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var browser: LinearLayout
     private lateinit var channelList: LinearLayout
     private lateinit var channelScroll: ScrollView
-    private lateinit var categoryScroll: ScrollView
+    private lateinit var programmeDetails: LinearLayout
     private lateinit var playbackBar: LinearLayout
     private val statusHandler = Handler(Looper.getMainLooper())
     private val hideStatusRunnable = Runnable { if (!browserVisible && ::playbackBar.isInitialized) playbackBar.visibility = View.GONE }
@@ -524,6 +524,7 @@ class MainActivity : AppCompatActivity() {
                                     epgProgress = percent
                                     epgProgressText = if (contentLength > 0) "Загрузка телепрограммы: $percent%" else "Загрузка телепрограммы: ${bytes / 1024} КБ"
                                     updatePlaybackBar()
+                                    refreshProgrammeDetails()
                                 }
                             }
                         }
@@ -547,6 +548,7 @@ class MainActivity : AppCompatActivity() {
                             epgProgress = 0
                             epgProgressText = "Разбор телепрограммы…"
                             updatePlaybackBar()
+                            refreshProgrammeDetails()
                         }
                     }
                     LimitedInputStream(xmlStream, 256L * 1024L * 1024L).use { EpgParser.parse(it) }
@@ -563,6 +565,7 @@ class MainActivity : AppCompatActivity() {
                     epgProgress = 100
                     epgProgressText = "Телепрограмма загружена"
                     updatePlaybackBar()
+                    refreshProgrammeDetails()
                     showPlaybackBarForFiveSeconds()
                     toast("EPG загружен: ${programmes.size} передач")
                 }
@@ -572,6 +575,7 @@ class MainActivity : AppCompatActivity() {
                     epgLoading = false
                     epgProgressText = "Ошибка загрузки телепрограммы"
                     updatePlaybackBar()
+                    refreshProgrammeDetails()
                     showPlaybackBarForFiveSeconds()
                     toast("Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
                 }
@@ -636,6 +640,7 @@ class MainActivity : AppCompatActivity() {
     private fun showBrowser() {
         if (channels.isEmpty() || browserVisible) return
         browserVisible = true
+        statusHandler.removeCallbacks(hideStatusRunnable)
         playbackBar.visibility = View.GONE
         browser = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -643,64 +648,39 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xF00B0E14.toInt())
         }
 
-        val categories = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        categories.addView(label("КАТЕГОРИИ", 16f))
-        groups.forEachIndexed { index, group ->
-            categories.addView(button((if (index == groupIndex) "●  " else "   ") + group) {
-                groupIndex = index
-                selectFirstChannelInGroup()
-                refreshChannels()
-                refreshCategories()
-            })
-        }
-        categoryScroll = ScrollView(this).apply {
-            isFillViewport = true
-            isVerticalScrollBarEnabled = true
-            addView(categories)
-        }
         channelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         channelScroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = true
             addView(channelList)
         }
-        browser.addView(categoryScroll, LinearLayout.LayoutParams(dp(260), 0, 1f))
-        browser.addView(channelScroll, LinearLayout.LayoutParams(0, -1, 1f))
+        programmeDetails = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.TOP
+            setPadding(dp(28), dp(18), dp(18), dp(12))
+            setBackgroundColor(0xFF111925.toInt())
+        }
+        browser.addView(channelScroll, LinearLayout.LayoutParams(0, -1, 0.48f).apply {
+            rightMargin = dp(12)
+        })
+        browser.addView(programmeDetails, LinearLayout.LayoutParams(0, -1, 0.52f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
         refreshChannels()
-        refreshCategories()
-    }
-
-    private fun refreshCategories() {
-        if (!browserVisible || !::categoryScroll.isInitialized) return
-        val categories = categoryScroll.getChildAt(0) as? LinearLayout ?: return
-        categories.removeAllViews()
-        categories.addView(label("КАТЕГОРИИ", 16f))
-        groups.forEachIndexed { index, group ->
-            categories.addView(button((if (index == groupIndex) "●  " else "   ") + group) {
-                groupIndex = index
-                selectFirstChannelInGroup()
-                refreshChannels()
-                refreshCategories()
-            })
-        }
-        categories.post {
-            val selected = categories.getChildAt(groupIndex + 1) ?: return@post
-            val target = (selected.top - categoryScroll.height / 2 + selected.height / 2).coerceAtLeast(0)
-            categoryScroll.smoothScrollTo(0, target)
-        }
+        refreshProgrammeDetails()
     }
 
     private fun refreshChannels() {
         if (!browserVisible) return
         channelList.removeAllViews()
-        channelList.addView(label("КАНАЛЫ  •  ${groups[groupIndex]}", 20f))
+        channelList.addView(label("${groups.getOrNull(groupIndex) ?: "КАНАЛЫ"}  •  КАНАЛЫ", 20f))
         val indices = channels.indices.filter { channels[it].group == groups[groupIndex] }
         var selectedRow: View? = null
         indices.forEach { index ->
             val isSelected = index == selectedChannel
             val row = button((if (isSelected) "▶  " else "   ") + channels[index].name) {
-                playChannel(index)
+                selectedChannel = index
+                refreshChannels()
+                refreshProgrammeDetails()
             }.apply {
                 isAllCaps = false
                 textSize = 17f
@@ -732,6 +712,52 @@ class MainActivity : AppCompatActivity() {
                 val target = (row.top - channelScroll.height / 2 + row.height / 2).coerceAtLeast(0)
                 channelScroll.smoothScrollTo(0, target)
             }
+        }
+    }
+
+    private fun refreshProgrammeDetails() {
+        if (!browserVisible || !::programmeDetails.isInitialized) return
+        programmeDetails.removeAllViews()
+        val channel = channels.getOrNull(selectedChannel) ?: return
+        programmeDetails.addView(label("ТЕЛЕПРОГРАММА", 16f))
+        programmeDetails.addView(statusText(channel.name, 27f).apply {
+            setPadding(0, dp(10), 0, dp(14))
+        })
+        val pair = findCurrentAndNext(channel)
+        if (epgLoading) {
+            programmeDetails.addView(statusText(epgProgressText.ifBlank { "Загрузка телепрограммы…" }, 20f))
+            val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100
+                progress = epgProgress.coerceIn(0, 100)
+                isIndeterminate = epgProgress <= 0
+            }
+            programmeDetails.addView(progress, LinearLayout.LayoutParams(-1, dp(10)).apply { topMargin = dp(12) })
+        } else if (pair != null) {
+            val current = pair.first
+            programmeDetails.addView(label("СЕЙЧАС  ${current.timeRange()}", 16f))
+            programmeDetails.addView(statusText(current.title, 24f).apply {
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setPadding(0, dp(6), 0, dp(10))
+            })
+            if (current.description.isNotBlank()) {
+                programmeDetails.addView(statusText(current.description, 18f).apply {
+                    setTextColor(0xFFD0D5DE.toInt())
+                    setPadding(0, 0, 0, dp(18))
+                })
+            }
+            pair.second?.let { next ->
+                programmeDetails.addView(label("ДАЛЕЕ  ${next.timeRange()}", 16f))
+                programmeDetails.addView(statusText(next.title, 20f).apply {
+                    setPadding(0, dp(6), 0, dp(8))
+                })
+                if (next.description.isNotBlank()) programmeDetails.addView(statusText(next.description, 16f).apply {
+                    setTextColor(0xFFB8C0CC.toInt())
+                })
+            }
+        } else {
+            programmeDetails.addView(statusText("Для этого канала сейчас нет данных телепрограммы.", 20f).apply {
+                setTextColor(0xFFB8C0CC.toInt())
+            })
         }
     }
 
@@ -812,19 +838,19 @@ class MainActivity : AppCompatActivity() {
                     when (keyCode) {
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             selectedChannel = visible[(position - 1).coerceAtLeast(0)]
-                            refreshChannels(); return true
+                            refreshChannels(); refreshProgrammeDetails(); return true
                         }
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             selectedChannel = visible[(position + 1).coerceAtMost(visible.lastIndex)]
-                            refreshChannels(); return true
+                            refreshChannels(); refreshProgrammeDetails(); return true
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             groupIndex = (groupIndex - 1).coerceAtLeast(0)
-                            selectFirstChannelInGroup(); refreshChannels(); return true
+                            selectFirstChannelInGroup(); refreshChannels(); refreshProgrammeDetails(); return true
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             groupIndex = (groupIndex + 1).coerceAtMost(groups.lastIndex)
-                            selectFirstChannelInGroup(); refreshChannels(); return true
+                            selectFirstChannelInGroup(); refreshChannels(); refreshProgrammeDetails(); return true
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                             playChannel(selectedChannel); return true
