@@ -1,5 +1,4 @@
-
-name: Build Android APK
+name: Build IPTV Launcher APK
 
 on:
   workflow_dispatch:
@@ -9,10 +8,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
+
+      - name: Verify launcher icon sources
+        run: |
+          set -euxo pipefail
+          test -s app/src/main/res/mipmap-mdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-hdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          sha256sum app/src/main/res/mipmap-*/ic_launcher.png
+          grep -q 'versionCode = 2' app/build.gradle.kts
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -25,44 +34,15 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Check source icons
-        run: |
-          echo "========== COMMIT =========="
-          git log -1 --oneline
-
-          echo "========== ICON FILES =========="
-          find app/src/main/res -type f | grep -E 'ic_launcher|tv_banner' | sort
-
-          echo "========== MANIFEST =========="
-          grep -nE 'android:icon|android:banner|android:roundIcon' app/src/main/AndroidManifest.xml || true
-
-          echo "========== ICON FILE DETAILS =========="
-          find app/src/main/res -type f -name 'ic_launcher*' -exec file {} \;
-
       - name: Build debug APK
-        run: |
-          gradle --stop
-          gradle clean
-          gradle :app:assembleDebug
+        run: gradle --no-daemon clean :app:assembleDebug
 
-      - name: Verify APK
-        run: |
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+      - name: Name APK with version
+        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.2.0-icon-refresh.apk
 
-          test -f "$APK"
-
-          echo "========== APK INFORMATION =========="
-          "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/aapt dump badging "$APK"
-
-          echo "========== APK ICON RESOURCES =========="
-          unzip -l "$APK" | grep -E 'ic_launcher|tv_banner' || true
-
-          echo "========== APK SHA256 =========="
-          sha256sum "$APK"
-
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTVLauncher-debug-verified
-          path: app/build/outputs/apk/debug/*.apk
+          name: IPTVLauncher-v0.2.0-icon-refresh
+          path: IPTVLauncher-v0.2.0-icon-refresh.apk
           if-no-files-found: error
