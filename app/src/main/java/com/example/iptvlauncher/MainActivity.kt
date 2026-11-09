@@ -1249,23 +1249,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val fakeScene = FrameLayout(this).apply {
-            // Имитация кадра телеканала: по ней хорошо заметно, насколько
-            // прозрачная плашка перекрывает изображение.
-            setBackgroundColor(0xFF26394A.toInt())
-            addView(LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                addView(TextView(this@MainActivity).apply {
-                    text = "▶"
-                    textSize = 42f
-                    setTextColor(0xFFEAF4FF.toInt())
-                })
-                addView(TextView(this@MainActivity).apply {
-                    text = "ПРЯМОЙ ЭФИР"
-                    textSize = 11f
-                    letterSpacing = 0.18f
-                    setTextColor(0xFFEAF4FF.toInt())
-                })
+            addView(android.widget.ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.channel_preview)
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                contentDescription = "Иллюстрация телестудии для предпросмотра прозрачности"
             }, FrameLayout.LayoutParams(-1, -1))
             addView(TextView(this@MainActivity).apply {
                 text = "ПЕРВЫЙ\nКАНАЛ"
