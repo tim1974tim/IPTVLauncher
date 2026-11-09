@@ -1114,6 +1114,12 @@ class MainActivity : AppCompatActivity() {
                     if (prefs.getBoolean("back_opens_browser", true)) {
                         showBrowser()
                         return true
+                    } else {
+                        // При выключенной опции BACK не закрывает приложение:
+                        // показываем статус-бар поверх эфира на 3 секунды.
+                        updatePlaybackBar()
+                        showPlaybackBarForThreeSeconds()
+                        return true
                     }
                 }
                 return super.dispatchKeyEvent(event)
@@ -1626,6 +1632,10 @@ class MainActivity : AppCompatActivity() {
             closeBrowser()
         } else if (channels.isNotEmpty() && prefs.getBoolean("back_opens_browser", true)) {
             showBrowser()
+        } else if (channels.isNotEmpty()) {
+            // При выключенной опции BACK оставляет эфир и показывает статус-бар 3 секунды.
+            updatePlaybackBar()
+            showPlaybackBarForThreeSeconds()
         } else {
             super.onBackPressed()
         }
