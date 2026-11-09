@@ -34,16 +34,11 @@ class MainActivity : AppCompatActivity() {
     private var okLongPressTriggered = false
     private val longOkRunnable = Runnable { if (!browserVisible && channels.isNotEmpty()) { okLongPressTriggered = true; showAppearanceSettings() } }
     private val palettes = listOf(
-        intArrayOf(0xFF174A70.toInt(), 0xFF39D7FF.toInt(), 0xFF202A3A.toInt()),
-        intArrayOf(0xFF245C3A.toInt(), 0xFF70E09A.toInt(), 0xFF1B3025.toInt()),
-        intArrayOf(0xFF633A78.toInt(), 0xFFD49BFF.toInt(), 0xFF302039.toInt()),
-        intArrayOf(0xFF76501F.toInt(), 0xFFFFC45C.toInt(), 0xFF382B1B.toInt()),
-        intArrayOf(0xFF71343A.toInt(), 0xFFFF858D.toInt(), 0xFF382126.toInt()),
-        intArrayOf(0xFF17656A.toInt(), 0xFF66E6E0.toInt(), 0xFF1B3335.toInt()),
-        intArrayOf(0xFF3F4D86.toInt(), 0xFF9EADFF.toInt(), 0xFF252B45.toInt()),
-        intArrayOf(0xFF66513B.toInt(), 0xFFE3C49A.toInt(), 0xFF332B23.toInt()),
-        intArrayOf(0xFF4D5964.toInt(), 0xFFC5D5E3.toInt(), 0xFF28323B.toInt()),
-        intArrayOf(0xFF7A3E66.toInt(), 0xFFFF9ACB.toInt(), 0xFF3B2533.toInt())
+        intArrayOf(0xFF145B91.toInt(), 0xFF45C7FF.toInt(), 0xFF17334B.toInt()), // Океан
+        intArrayOf(0xFF176B4A.toInt(), 0xFF63E6A5.toInt(), 0xFF183D30.toInt()), // Изумруд
+        intArrayOf(0xFF59318A.toInt(), 0xFFC49AFF.toInt(), 0xFF34204F.toInt()), // Аметист
+        intArrayOf(0xFF9A5718.toInt(), 0xFFFFC45A.toInt(), 0xFF503018.toInt()), // Янтарь
+        intArrayOf(0xFF922E50.toInt(), 0xFFFF789A.toInt(), 0xFF4A2033.toInt())  // Рубин
     )
     private val hideStatusRunnable = Runnable {
         if (!browserVisible && !isChannelBuffering && ::playbackBar.isInitialized) {
@@ -1182,7 +1177,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAppearanceSettings() {
-        val accent = 0xFF58AFFF.toInt()
+        val accent = currentPalette()[1]
         val bg = 0xFF080B12.toInt()
         val card = 0xFF151B26.toInt()
         val muted = 0xFFAAB5C5.toInt()
@@ -1190,14 +1185,14 @@ class MainActivity : AppCompatActivity() {
 
         fun applyFocusStyle(view: View, selected: Boolean = false) {
             val normal = android.graphics.drawable.GradientDrawable().apply {
-                setColor(if (selected) 0xFF203D5D.toInt() else 0xFF151B26.toInt())
+                setColor(if (selected) currentPalette()[2] else 0xFF151B26.toInt())
                 cornerRadius = dp(11).toFloat()
-                setStroke(dp(if (selected) 2 else 1), if (selected) 0xFF58AFFF.toInt() else 0xFF293648.toInt())
+                setStroke(dp(if (selected) 2 else 1), if (selected) currentPalette()[1] else 0xFF293648.toInt())
             }
             val focused = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF285782.toInt())
+                setColor(currentPalette()[0])
                 cornerRadius = dp(11).toFloat()
-                setStroke(dp(3), 0xFF79C4FF.toInt())
+                setStroke(dp(3), currentPalette()[1])
             }
             val states = android.graphics.drawable.StateListDrawable().apply {
                 addState(intArrayOf(android.R.attr.state_focused), focused)
@@ -1248,7 +1243,7 @@ class MainActivity : AppCompatActivity() {
         })
         val previewStage = FrameLayout(this).apply {
             background = android.graphics.drawable.GradientDrawable().apply {
-                colors = intArrayOf(0xFF26384B.toInt(), 0xFF111923.toInt())
+                colors = intArrayOf(currentPalette()[0], currentPalette()[2])
                 orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
                 cornerRadius = dp(14).toFloat()
             }
@@ -1259,13 +1254,13 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(this@MainActivity).apply {
                 text = "▶"
                 textSize = 46f
-                setTextColor(0xFFE8F2FF.toInt())
+                setTextColor(currentPalette()[1])
             })
             addView(TextView(this@MainActivity).apply {
                 text = "ПРЯМОЙ ЭФИР"
                 textSize = 11f
                 letterSpacing = 0.18f
-                setTextColor(0xFFB8C8DA.toInt())
+                setTextColor(currentPalette()[1])
             })
         }
         previewStage.addView(fakeScene, FrameLayout.LayoutParams(-1, -1))
@@ -1305,6 +1300,7 @@ class MainActivity : AppCompatActivity() {
             previewStatus.alpha = statusAlpha() / 100f
             previewText.text = "●  ФИЛЬМЫ     1/24   Первый канал"
             previewText.setTextColor(0xFFFFFFFF.toInt())
+            previewText.setCompoundDrawablePadding(dp(5))
             val h = (54 * statusSizeScale()).toInt().coerceAtLeast(26)
             val lp = previewStatus.layoutParams as? FrameLayout.LayoutParams
                 ?: FrameLayout.LayoutParams(-1, dp(h), if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM)
@@ -1313,7 +1309,11 @@ class MainActivity : AppCompatActivity() {
             lp.gravity = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
             previewStatus.layoutParams = lp
             previewStatus.setPadding(dp(10), dp(if (h < 40) 3 else 7), dp(10), dp(if (h < 40) 3 else 7))
-            previewStage.setBackgroundColor(0xFF172332.toInt())
+            previewStage.background = android.graphics.drawable.GradientDrawable().apply {
+                colors = intArrayOf(colors[0], colors[2])
+                orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
+                cornerRadius = dp(14).toFloat()
+            }
             previewCaption.text = "Палитра ${prefs.getInt("channel_palette", 0) + 1}  ·  ${statusAlpha()}%  ·  " +
                 (if (statusAtTop()) "сверху" else "снизу") + "  ·  " +
                 when (prefs.getString("status_size", "large")) {
@@ -1321,12 +1321,13 @@ class MainActivity : AppCompatActivity() {
                     "small" -> "50%"
                     else -> "100%"
                 }
-            // Акцент палитры виден на тонкой линии под демонстрацией.
+            // Цветовая схема видна сразу: фон сцены, статус-бар и акцентная рамка.
             previewStatus.background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(statusBackgroundColor())
+                setColor(colors[2])
                 setStroke(dp(2), colors[1])
                 cornerRadius = dp(7).toFloat()
             }
+            previewStatus.alpha = 0.96f
         }
 
         val rightColumn = LinearLayout(this).apply {
@@ -1442,8 +1443,15 @@ class MainActivity : AppCompatActivity() {
                 isFocusable = true
                 isFocusableInTouchMode = true
                 applyFocusStyle(this, prefs.getInt("channel_palette", 0) == i)
+                if (prefs.getInt("channel_palette", 0) == i) {
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(colors[2])
+                        cornerRadius = dp(11).toFloat()
+                        setStroke(dp(2), colors[1])
+                    }
+                }
                 addView(TextView(this@MainActivity).apply {
-                    text = "Вариант ${i + 1}"
+                    text = listOf("Океан", "Изумруд", "Аметист", "Янтарь", "Рубин")[i]
                     textSize = 14f
                     setTextColor(-1)
                     isFocusable = false
