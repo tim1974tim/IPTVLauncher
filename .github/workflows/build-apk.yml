@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -8,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,12 +25,44 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Check source icons
+        run: |
+          echo "========== COMMIT =========="
+          git log -1 --oneline
+
+          echo "========== ICON FILES =========="
+          find app/src/main/res -type f | grep -E 'ic_launcher|tv_banner' | sort
+
+          echo "========== MANIFEST =========="
+          grep -nE 'android:icon|android:banner|android:roundIcon' app/src/main/AndroidManifest.xml || true
+
+          echo "========== ICON FILE DETAILS =========="
+          find app/src/main/res -type f -name 'ic_launcher*' -exec file {} \;
+
       - name: Build debug APK
-        run: gradle :app:assembleDebug
+        run: |
+          gradle --stop
+          gradle clean
+          gradle :app:assembleDebug
+
+      - name: Verify APK
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK"
+
+          echo "========== APK INFORMATION =========="
+          "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/aapt dump badging "$APK"
+
+          echo "========== APK ICON RESOURCES =========="
+          unzip -l "$APK" | grep -E 'ic_launcher|tv_banner' || true
+
+          echo "========== APK SHA256 =========="
+          sha256sum "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IPTVLauncher-debug
+          name: IPTVLauncher-debug-verified
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
