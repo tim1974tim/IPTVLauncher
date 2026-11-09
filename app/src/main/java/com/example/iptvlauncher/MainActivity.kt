@@ -96,11 +96,29 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // При возвращении в приложение запускаем тот же канал, который играл до HOME.
-        if (homeReturnPending && ::player.isInitialized && channels.isNotEmpty()) {
-            homeReturnPending = false
-            val index = resolveLastChannelIndex(channels, selectedChannel)
-            playChannel(index)
+        // После возврата из свернутого состояния заново поднимаем эфир.
+        if (::player.isInitialized && channels.isNotEmpty() && !browserVisible) {
+            if (homeReturnPending) {
+                homeReturnPending = false
+                playChannel(resolveLastChannelIndex(channels, selectedChannel))
+            }
+            // Некоторые IPTV-потоки после возврата Activity остаются в READY/IDLE,
+            // но фактически не выводят видео. Проверяем состояние после восстановления окна.
+            statusHandler.removeCallbacks(resumePlaybackRecovery)
+            statusHandler.postDelayed(resumePlaybackRecovery, 2_500L)
+        }
+    }
+
+    private val resumePlaybackRecovery = Runnable {
+        if (!isFinishing && !isDestroyed && !browserVisible && channels.isNotEmpty() && ::player.isInitialized) {
+            val state = player.playbackState
+            val stalled = player.playerError != null ||
+                state == androidx.media3.common.Player.STATE_IDLE ||
+                state == androidx.media3.common.Player.STATE_ENDED ||
+                (state == androidx.media3.common.Player.STATE_READY && player.playWhenReady && !player.isPlaying)
+            if (stalled) {
+                playChannel(resolveLastChannelIndex(channels, selectedChannel))
+            }
         }
     }
 
@@ -1551,6 +1569,26 @@ class MainActivity : AppCompatActivity() {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
                 .onFailure { toast("Не удалось открыть настройки приставки") }
         }
+        section("СПРАВКА")
+        settingButton("Как управлять приложением") {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Управление с пульта")
+                .setMessage(
+                    "Во время просмотра:\n" +
+                    "• Вверх / Вниз — переключение каналов.\n" +
+                    "• Влево / Вправо — смена категории.\n" +
+                    "• OK (удерживать 3 секунды) — настройки.\n" +
+                    "• BACK — список каналов, если включена соответствующая галочка; если выключена — показать статус-бар на 3 секунды.\n\n" +
+                    "В списке каналов:\n" +
+                    "• Вверх / Вниз — выбор канала.\n" +
+                    "• Влево / Вправо — категории.\n" +
+                    "• OK — включить выбранный канал.\n" +
+                    "• BACK — вернуться к просмотру.\n\n" +
+                    "Главный экран приставки: кнопка HOME. При возвращении приложение пытается продолжить последний канал."
+                )
+                .setPositiveButton("Понятно", null)
+                .show()
+        }
 
         shell.addView(previewColumn, LinearLayout.LayoutParams(0, -1, 0.43f).apply { rightMargin = dp(14) })
         shell.addView(rightColumn, LinearLayout.LayoutParams(0, -1, 0.57f))
@@ -1680,6 +1718,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         statusHandler.removeCallbacks(hideStatusRunnable)
+        statusHandler.removeCallbacks(resumePlaybackRecovery)
+        statusHandler.removeCallbacks(longOkRunnable)
         if (::player.isInitialized) player.release()
         super.onDestroy()
     }
