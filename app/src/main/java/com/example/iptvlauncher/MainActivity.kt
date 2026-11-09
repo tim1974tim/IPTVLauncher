@@ -1248,19 +1248,50 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = dp(14).toFloat()
             }
         }
-        val fakeScene = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
+        val fakeScene = FrameLayout(this).apply {
+            // Имитация кадра телеканала: по ней хорошо заметно, насколько
+            // прозрачная плашка перекрывает изображение.
+            setBackgroundColor(0xFF26394A.toInt())
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                addView(TextView(this@MainActivity).apply {
+                    text = "▶"
+                    textSize = 42f
+                    setTextColor(0xFFEAF4FF.toInt())
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = "ПРЯМОЙ ЭФИР"
+                    textSize = 11f
+                    letterSpacing = 0.18f
+                    setTextColor(0xFFEAF4FF.toInt())
+                })
+            }, FrameLayout.LayoutParams(-1, -1))
             addView(TextView(this@MainActivity).apply {
-                text = "▶"
-                textSize = 46f
-                setTextColor(currentPalette()[1])
+                text = "ПЕРВЫЙ\nКАНАЛ"
+                textSize = 10f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setTextColor(0xFFFFFFFF.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xAA182536.toInt())
+                    cornerRadius = dp(8).toFloat()
+                }
+                setPadding(dp(8), dp(5), dp(8), dp(5))
+            }, FrameLayout.LayoutParams(dp(58), dp(48), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(10); rightMargin = dp(10)
             })
             addView(TextView(this@MainActivity).apply {
-                text = "ПРЯМОЙ ЭФИР"
-                textSize = 11f
-                letterSpacing = 0.18f
-                setTextColor(currentPalette()[1])
+                text = "НОВОСТИ  ·  СЕЙЧАС В ЭФИРЕ"
+                textSize = 10f
+                setTextColor(0xFFEAF4FF.toInt())
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0x99000000.toInt())
+                    cornerRadius = dp(6).toFloat()
+                }
+            }, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
+                topMargin = dp(10); leftMargin = dp(10)
             })
         }
         previewStage.addView(fakeScene, FrameLayout.LayoutParams(-1, -1))
@@ -1296,8 +1327,14 @@ class MainActivity : AppCompatActivity() {
 
         fun refreshPreview() {
             val colors = currentPalette()
-            previewStatus.setBackgroundColor(statusBackgroundColor())
-            previewStatus.alpha = statusAlpha() / 100f
+            val opacity = statusAlpha()
+            val base = colors[2]
+            val translucent = android.graphics.Color.argb(
+                (opacity * 255 / 100).coerceIn(0, 255),
+                android.graphics.Color.red(base),
+                android.graphics.Color.green(base),
+                android.graphics.Color.blue(base)
+            )
             previewText.text = "●  ФИЛЬМЫ     1/24   Первый канал"
             previewText.setTextColor(0xFFFFFFFF.toInt())
             previewText.setCompoundDrawablePadding(dp(5))
@@ -1323,11 +1360,13 @@ class MainActivity : AppCompatActivity() {
                 }
             // Цветовая схема видна сразу: фон сцены, статус-бар и акцентная рамка.
             previewStatus.background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(colors[2])
+                setColor(translucent)
                 setStroke(dp(2), colors[1])
                 cornerRadius = dp(7).toFloat()
             }
-            previewStatus.alpha = 0.96f
+            // Не задаём alpha всей плашке: текст остаётся контрастным,
+            // а меняется именно прозрачность её фона.
+            previewStatus.alpha = 1f
         }
 
         val rightColumn = LinearLayout(this).apply {
@@ -1401,7 +1440,7 @@ class MainActivity : AppCompatActivity() {
 
         section("ПРОЗРАЧНОСТЬ  ·  ${statusAlpha()}%")
         val alphaValue = TextView(this).apply {
-            text = "${statusAlpha()}%"
+            text = "Непрозрачность фона: ${statusAlpha()}%"
             textSize = 13f
             setTextColor(0xFFE5EAF2.toInt())
         }
@@ -1423,7 +1462,7 @@ class MainActivity : AppCompatActivity() {
                     if (fromUser) {
                         val value = progress + 20
                         prefs.edit().putInt("status_alpha", value).apply()
-                        alphaValue.text = "$value%"
+                        alphaValue.text = "Непрозрачность фона: $value%"
                         applyStatusAppearance()
                         refreshPreview()
                     }
