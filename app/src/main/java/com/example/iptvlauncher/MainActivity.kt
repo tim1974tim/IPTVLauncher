@@ -1261,9 +1261,8 @@ class MainActivity : AppCompatActivity() {
         })
         val previewParams = FrameLayout.LayoutParams(-1, dp(54), Gravity.BOTTOM)
         previewStage.addView(previewStatus, previewParams)
-        previewColumn.addView(previewStage, LinearLayout.LayoutParams(-1, 0, 1f).apply {
-            minimumHeight = dp(190)
-        })
+        previewStage.minimumHeight = dp(190)
+        previewColumn.addView(previewStage, LinearLayout.LayoutParams(-1, 0, 1f))
         val previewCaption = TextView(this).apply {
             text = "Изменения отображаются сразу"
             textSize = 12f
