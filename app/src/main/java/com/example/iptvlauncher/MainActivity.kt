@@ -1112,10 +1112,16 @@ class MainActivity : AppCompatActivity() {
             if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_B) {
                 if (channels.isNotEmpty()) {
-                    if (browserVisible) closeBrowser() else showBrowser()
-                    return true
+                    if (browserVisible) {
+                        closeBrowser()
+                        return true
+                    }
+                    if (prefs.getBoolean("back_opens_browser", true)) {
+                        showBrowser()
+                        return true
+                    }
                 }
-                return true
+                return super.dispatchKeyEvent(event)
             }
             if (browserVisible) {
                 val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
@@ -1176,135 +1182,321 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAppearanceSettings() {
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(18))
-            setBackgroundColor(0xFF0B1220.toInt())
-        }
+        val accent = 0xFF58AFFF.toInt()
+        val bg = 0xFF080B12.toInt()
+        val card = 0xFF151B26.toInt()
+        val muted = 0xFFAAB5C5.toInt()
         lateinit var dialog: android.app.AlertDialog
-        val hero = LinearLayout(this).apply {
+
+        val shell = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            setBackgroundColor(bg)
+        }
+
+        // Левая часть — живая визуальная демонстрация выбранных настроек.
+        val previewColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(16), dp(18), dp(16))
+            setPadding(dp(16), dp(14), dp(16), dp(14))
             background = android.graphics.drawable.GradientDrawable().apply {
-                colors = intArrayOf(0xFF173B61.toInt(), 0xFF10243D.toInt())
-                orientation = android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM
-                cornerRadius = dp(16).toFloat()
-                setStroke(dp(1), 0xFF347FB8.toInt())
+                setColor(0xFF101722.toInt())
+                cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), 0xFF263448.toInt())
             }
+        }
+        previewColumn.addView(TextView(this).apply {
+            text = "ПРЕДПРОСМОТР"
+            textSize = 12f
+            letterSpacing = 0.14f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(muted)
+        })
+        previewColumn.addView(TextView(this).apply {
+            text = "Так будет выглядеть эфир"
+            textSize = 17f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(-1)
+            setPadding(0, dp(5), 0, dp(12))
+        })
+        val previewStage = FrameLayout(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                colors = intArrayOf(0xFF26384B.toInt(), 0xFF111923.toInt())
+                orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
+                cornerRadius = dp(14).toFloat()
+            }
+        }
+        val fakeScene = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
             addView(TextView(this@MainActivity).apply {
-                text = "✦  IPTV LAUNCHER"
-                textSize = 21f; setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(0xFFFFFFFF.toInt())
+                text = "▶"
+                textSize = 46f
+                setTextColor(0xFFE8F2FF.toInt())
             })
             addView(TextView(this@MainActivity).apply {
-                text = "Быстрые настройки просмотра"
-                textSize = 13f; setTextColor(0xFFB8D8F5.toInt()); setPadding(0, dp(4), 0, 0)
+                text = "ПРЯМОЙ ЭФИР"
+                textSize = 11f
+                letterSpacing = 0.18f
+                setTextColor(0xFFB8C8DA.toInt())
             })
         }
-        panel.addView(hero, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
-        fun heading(t: String) {
-            panel.addView(TextView(this).apply {
-                text = t.uppercase(); textSize = 12f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(0xFF70C8FF.toInt())
-                setPadding(dp(4), dp(14), 0, dp(5))
-            })
+        previewStage.addView(fakeScene, FrameLayout.LayoutParams(-1, -1))
+        val previewStatus = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(7), dp(10), dp(7))
         }
-        fun action(t: String, run: () -> Unit) {
-            panel.addView(Button(this).apply {
-                text = t; isAllCaps = false; textSize = 15f
-                setTextColor(0xFFF2F7FF.toInt())
-                minHeight = dp(50); isFocusable = true; isFocusableInTouchMode = true
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(0xFF18283B.toInt()); cornerRadius = dp(10).toFloat()
-                    setStroke(dp(1), 0xFF35516D.toInt())
+        val previewText = TextView(this).apply {
+            text = "●  ФИЛЬМЫ     1/24   Первый канал"
+            textSize = 11f
+            setTextColor(-1)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        previewStatus.addView(previewText, LinearLayout.LayoutParams(0, -2, 1f))
+        previewStatus.addView(TextView(this).apply {
+            text = "16:00"
+            textSize = 10f
+            setTextColor(-1)
+        })
+        val previewParams = FrameLayout.LayoutParams(-1, dp(54), Gravity.BOTTOM)
+        previewStage.addView(previewStatus, previewParams)
+        previewColumn.addView(previewStage, LinearLayout.LayoutParams(-1, 0, 1f).apply {
+            minimumHeight = dp(190)
+        })
+        val previewCaption = TextView(this).apply {
+            text = "Изменения отображаются сразу"
+            textSize = 12f
+            setTextColor(muted)
+            setPadding(0, dp(10), 0, 0)
+        }
+        previewColumn.addView(previewCaption)
+
+        fun refreshPreview() {
+            val colors = currentPalette()
+            previewStatus.setBackgroundColor(statusBackgroundColor())
+            previewStatus.alpha = statusAlpha() / 100f
+            previewText.text = "●  ФИЛЬМЫ     1/24   Первый канал"
+            previewText.setTextColor(0xFFFFFFFF.toInt())
+            val h = (54 * statusSizeScale()).toInt().coerceAtLeast(26)
+            val lp = previewStatus.layoutParams as? FrameLayout.LayoutParams
+                ?: FrameLayout.LayoutParams(-1, dp(h), if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM)
+            lp.width = -1
+            lp.height = dp(h)
+            lp.gravity = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
+            previewStatus.layoutParams = lp
+            previewStatus.setPadding(dp(10), dp(if (h < 40) 3 else 7), dp(10), dp(if (h < 40) 3 else 7))
+            previewStage.setBackgroundColor(0xFF172332.toInt())
+            previewCaption.text = "Палитра ${prefs.getInt("channel_palette", 0) + 1}  ·  ${statusAlpha()}%  ·  " +
+                (if (statusAtTop()) "сверху" else "снизу") + "  ·  " +
+                when (prefs.getString("status_size", "large")) {
+                    "medium" -> "80%"
+                    "small" -> "50%"
+                    else -> "100%"
                 }
-                setOnFocusChangeListener { v, focused ->
-                    v.background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(if (focused) 0xFF20527A.toInt() else 0xFF18283B.toInt())
-                        cornerRadius = dp(10).toFloat()
-                        setStroke(dp(if (focused) 2 else 1), if (focused) 0xFF52C8FF.toInt() else 0xFF35516D.toInt())
+            // Акцент палитры виден на тонкой линии под демонстрацией.
+            previewStatus.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(statusBackgroundColor())
+                setStroke(dp(2), colors[1])
+                cornerRadius = dp(7).toFloat()
+            }
+        }
+
+        val rightColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(8), dp(8))
+        }
+        rightColumn.addView(TextView(this).apply {
+            text = "Настройки просмотра"
+            textSize = 25f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(-1)
+        })
+        rightColumn.addView(TextView(this).apply {
+            text = "Настройте интерфейс под себя"
+            textSize = 13f
+            setTextColor(muted)
+            setPadding(0, dp(3), 0, dp(12))
+        })
+        val settingsScroll = ScrollView(this).apply { isFillViewport = true }
+        val settings = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        settingsScroll.addView(settings)
+        rightColumn.addView(settingsScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        fun section(title: String) {
+            settings.addView(TextView(this).apply {
+                text = title
+                textSize = 13f
+                letterSpacing = 0.08f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(accent)
+                setPadding(0, dp(14), 0, dp(7))
+            })
+        }
+        fun settingButton(title: String, selected: Boolean = false, onClick: () -> Unit) {
+            settings.addView(Button(this).apply {
+                text = title
+                isAllCaps = false
+                textSize = 14f
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), 0, dp(12), 0)
+                minHeight = dp(44)
+                isFocusable = true
+                isFocusableInTouchMode = true
+                setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFE5EAF2.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (selected) 0xFF203D5D.toInt() else card)
+                    cornerRadius = dp(11).toFloat()
+                    setStroke(dp(if (selected) 2 else 1), if (selected) accent else 0xFF293648.toInt())
+                }
+                setOnClickListener { onClick(); refreshPreview() }
+            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+        }
+
+        section("ПОЛОЖЕНИЕ СТАТУС-БАРА")
+        settingButton("↑  В верхней части", statusAtTop()) {
+            prefs.edit().putBoolean("status_top", true).apply(); applyStatusAppearance()
+        }
+        settingButton("↓  В нижней части", !statusAtTop()) {
+            prefs.edit().putBoolean("status_top", false).apply(); applyStatusAppearance()
+        }
+
+        section("РАЗМЕР СТАТУС-БАРА")
+        settingButton("Большой  ·  100%", statusSizeScale() == 1f) {
+            prefs.edit().putString("status_size", "large").apply(); applyStatusAppearance()
+        }
+        settingButton("Средний  ·  80%", statusSizeScale() == 0.8f) {
+            prefs.edit().putString("status_size", "medium").apply(); applyStatusAppearance()
+        }
+        settingButton("Компактный  ·  50%", statusSizeScale() == 0.5f) {
+            prefs.edit().putString("status_size", "small").apply(); applyStatusAppearance()
+        }
+
+        section("ПРОЗРАЧНОСТЬ  ·  ${statusAlpha()}%")
+        val alphaValue = TextView(this).apply {
+            text = "${statusAlpha()}%"
+            textSize = 13f
+            setTextColor(0xFFE5EAF2.toInt())
+        }
+        settings.addView(alphaValue)
+        settings.addView(SeekBar(this).apply {
+            max = 80
+            progress = statusAlpha() - 20
+            isFocusable = true
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        val value = progress + 20
+                        prefs.edit().putInt("status_alpha", value).apply()
+                        alphaValue.text = "$value%"
+                        applyStatusAppearance()
+                        refreshPreview()
                     }
                 }
-                setOnClickListener { run(); dialog.dismiss() }
-            }.also { it.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) } })
-        }
-        heading("Положение статус-бара")
-        action(if (statusAtTop()) "Сейчас сверху — переместить вниз" else "Сейчас снизу — переместить вверх") { prefs.edit().putBoolean("status_top", !statusAtTop()).apply(); applyStatusAppearance() }
-        heading("Размер статус-бара")
-        action("Большой (100%)") { prefs.edit().putString("status_size","large").apply(); applyStatusAppearance() }
-        action("Средний (на 20% меньше)") { prefs.edit().putString("status_size","medium").apply(); applyStatusAppearance() }
-        action("Малый (на 50% меньше)") { prefs.edit().putString("status_size","small").apply(); applyStatusAppearance() }
-        heading("Прозрачность: ${statusAlpha()}%")
-        panel.addView(SeekBar(this).apply { max=80; progress=statusAlpha()-20; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { if(fromUser) { prefs.edit().putInt("status_alpha",progress+20).apply(); applyStatusAppearance() } }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        }) })
-        heading("Цветовая палитра списка каналов — выберите цвет")
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        })
+
+        section("ЦВЕТОВАЯ ПАЛИТРА")
         palettes.indices.forEach { i ->
             val colors = palettes[i]
-            val preview = LinearLayout(this).apply {
+            val paletteRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(6), dp(10), dp(6))
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(colors[2]); cornerRadius = dp(8).toFloat()
-                    setStroke(dp(if (prefs.getInt("channel_palette", 0) == i) 3 else 1), if (prefs.getInt("channel_palette", 0) == i) 0xFFFFFFFF.toInt() else 0xFF667080.toInt())
-                }
-                addView(TextView(this@MainActivity).apply { text = "Палитра ${i + 1}"; textSize = 16f; setTextColor(-1) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-                addView(View(this@MainActivity).apply { setBackgroundColor(colors[0]) }, LinearLayout.LayoutParams(dp(54), dp(32)).apply { rightMargin = dp(6) })
-                addView(View(this@MainActivity).apply { setBackgroundColor(colors[1]) }, LinearLayout.LayoutParams(dp(54), dp(32)))
+                setPadding(dp(10), dp(5), dp(10), dp(5))
                 isFocusable = true
+                isFocusableInTouchMode = true
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (prefs.getInt("channel_palette", 0) == i) 0xFF203D5D.toInt() else card)
+                    cornerRadius = dp(10).toFloat()
+                    setStroke(dp(if (prefs.getInt("channel_palette", 0) == i) 2 else 1),
+                        if (prefs.getInt("channel_palette", 0) == i) accent else 0xFF293648.toInt())
+                }
+                addView(TextView(this@MainActivity).apply {
+                    text = "Вариант ${i + 1}"
+                    textSize = 14f
+                    setTextColor(-1)
+                }, LinearLayout.LayoutParams(0, dp(40), 1f))
+                addView(View(this@MainActivity).apply { setBackgroundColor(colors[0]) },
+                    LinearLayout.LayoutParams(dp(32), dp(25)).apply { rightMargin = dp(5) })
+                addView(View(this@MainActivity).apply { setBackgroundColor(colors[1]) },
+                    LinearLayout.LayoutParams(dp(32), dp(25)))
                 setOnClickListener {
                     prefs.edit().putInt("channel_palette", i).apply()
                     if (browserVisible) refreshChannels()
+                    refreshPreview()
+                    // Перестраиваем строки, чтобы подсветить выбранную палитру.
                     dialog.dismiss()
+                    showAppearanceSettings()
                 }
             }
-            panel.addView(preview)
+            settings.addView(paletteRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
         }
-        heading("Настройки адресов плейлиста и EPG")
-        val currentM3u = prefs.getString("playlist_url", "")?.takeIf { it.isNotBlank() } ?: "Локальный файл / не задан"
-        val currentEpg = prefs.getString("epg_url", "")?.takeIf { it.isNotBlank() } ?: "Не задан"
-        panel.addView(statusText("Текущий плейлист: $currentM3u", 14f))
-        panel.addView(statusText("Текущий EPG: $currentEpg", 14f))
-        action("Изменить адреса M3U и EPG") {
+
+        section("ПОВЕДЕНИЕ КНОПКИ НАЗАД")
+        val backOption = CheckBox(this).apply {
+            text = "Открывать список каналов кнопкой BACK"
+            textSize = 14f
+            setTextColor(0xFFE5EAF2.toInt())
+            buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+            isChecked = prefs.getBoolean("back_opens_browser", true)
+            minHeight = dp(48)
+            isFocusable = true
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean("back_opens_browser", checked).apply()
+            }
+        }
+        settings.addView(backOption)
+
+        section("ДОПОЛНИТЕЛЬНО")
+        settingButton("Адреса плейлиста и EPG") {
             val url = EditText(this).apply { hint = "Адрес M3U"; setSingleLine(true); setText(prefs.getString("playlist_url", "") ?: "") }
             val epg = EditText(this).apply { hint = "Адрес EPG"; setSingleLine(true); setText(prefs.getString("epg_url", "") ?: "") }
-            val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)); addView(url); addView(epg) }
+            val fields = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(8), dp(16), dp(8))
+                addView(url); addView(epg)
+            }
             android.app.AlertDialog.Builder(this).setTitle("Адреса источников").setView(fields)
                 .setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ ->
                     val newUrl = url.text.toString().trim()
                     prefs.edit().putString("playlist_url", newUrl).putString("epg_url", epg.text.toString().trim()).apply()
                     if (newUrl.startsWith("http://") || newUrl.startsWith("https://")) fetchPlaylist(newUrl, selectedChannel, true)
-                    else toast("Адреса сохранены. Для локального плейлиста выберите файл в первоначальных настройках.")
+                    else toast("Адреса сохранены.")
                 }.show()
         }
-        action("Обновить EPG вручную") {
+        settingButton("Обновить EPG вручную") {
             loadEpgIfConfigured(force = true)
             toast("Запущено ручное обновление EPG")
         }
-        action("Выбор категорий плейлиста") {
+        settingButton("Выбор категорий плейлиста") {
             val source = allPlaylistChannels.ifEmpty { channels.toList() }
             if (source.isNotEmpty()) showCategorySettings(source)
         }
-        action("Открыть настройки приставки") {
+        settingButton("Открыть настройки приставки") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
                 .onFailure { toast("Не удалось открыть настройки приставки") }
         }
-        dialog = android.app.AlertDialog.Builder(this)
-            .setView(ScrollView(this).apply {
-                isFillViewport = true
-                setBackgroundColor(0xFF0B1220.toInt())
-                addView(panel)
-            })
-            .setNegativeButton("ЗАКРЫТЬ", null)
-            .create()
+
+        shell.addView(previewColumn, LinearLayout.LayoutParams(0, -1, 0.43f).apply { rightMargin = dp(14) })
+        shell.addView(rightColumn, LinearLayout.LayoutParams(0, -1, 0.57f))
+        dialog = android.app.AlertDialog.Builder(this).setView(shell).create()
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.setOnKeyListener { _, keyCode, event ->
+            keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP
+        }
         dialog.show()
-        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.78f).toInt(), (resources.displayMetrics.heightPixels * 0.88f).toInt())
-        dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE)?.setTextColor(0xFF70C8FF.toInt())
+        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(),
+            (resources.displayMetrics.heightPixels * 0.90f).toInt())
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
+            setColor(bg); cornerRadius = dp(22).toFloat()
+            setStroke(dp(1), 0xFF2B3A4D.toInt())
+        })
+        refreshPreview()
+        settingsScroll.post { settingsScroll.scrollTo(0, 0) }
     }
 
     private fun showCategorySettings(source: List<TvChannel>) {
@@ -1350,8 +1542,10 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Android")
     override fun onBackPressed() {
-        if (channels.isNotEmpty()) {
-            if (browserVisible) closeBrowser() else showBrowser()
+        if (channels.isNotEmpty() && browserVisible) {
+            closeBrowser()
+        } else if (channels.isNotEmpty() && prefs.getBoolean("back_opens_browser", true)) {
+            showBrowser()
         } else {
             super.onBackPressed()
         }
