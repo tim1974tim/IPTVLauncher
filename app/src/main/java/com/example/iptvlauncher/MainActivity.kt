@@ -1188,6 +1188,34 @@ class MainActivity : AppCompatActivity() {
         val muted = 0xFFAAB5C5.toInt()
         lateinit var dialog: android.app.AlertDialog
 
+        fun applyFocusStyle(view: View, selected: Boolean = false) {
+            val normal = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (selected) 0xFF203D5D.toInt() else 0xFF151B26.toInt())
+                cornerRadius = dp(11).toFloat()
+                setStroke(dp(if (selected) 2 else 1), if (selected) 0xFF58AFFF.toInt() else 0xFF293648.toInt())
+            }
+            val focused = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF285782.toInt())
+                cornerRadius = dp(11).toFloat()
+                setStroke(dp(3), 0xFF79C4FF.toInt())
+            }
+            val states = android.graphics.drawable.StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), focused)
+                addState(intArrayOf(android.R.attr.state_pressed), focused)
+                addState(intArrayOf(), normal)
+            }
+            view.background = states
+            view.isFocusable = true
+            view.isFocusableInTouchMode = true
+            if (android.os.Build.VERSION.SDK_INT >= 21 && view is Button) {
+                view.backgroundTintList = null
+            }
+            view.onFocusChangeListener = View.OnFocusChangeListener { v, hasFocus ->
+                v.invalidate()
+                if (v is TextView) v.setTextColor(if (hasFocus || selected) 0xFFFFFFFF.toInt() else 0xFFE5EAF2.toInt())
+            }
+        }
+
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(18), dp(18), dp(18), dp(18))
@@ -1344,12 +1372,9 @@ class MainActivity : AppCompatActivity() {
                 minHeight = dp(44)
                 isFocusable = true
                 isFocusableInTouchMode = true
+                if (settings.childCount == 0) tag = "first_menu_action"
                 setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFE5EAF2.toInt())
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(if (selected) 0xFF203D5D.toInt() else card)
-                    cornerRadius = dp(11).toFloat()
-                    setStroke(dp(if (selected) 2 else 1), if (selected) accent else 0xFF293648.toInt())
-                }
+                applyFocusStyle(this, selected)
                 setOnClickListener { onClick(); refreshPreview() }
             }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
         }
@@ -1384,6 +1409,14 @@ class MainActivity : AppCompatActivity() {
             max = 80
             progress = statusAlpha() - 20
             isFocusable = true
+            isFocusableInTouchMode = true
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
+            setOnFocusChangeListener { v, focused ->
+                v.scaleX = if (focused) 1.05f else 1f
+                v.scaleY = if (focused) 1.18f else 1f
+                v.alpha = if (focused) 1f else 0.78f
+            }
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
@@ -1408,16 +1441,12 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(10), dp(5), dp(10), dp(5))
                 isFocusable = true
                 isFocusableInTouchMode = true
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(if (prefs.getInt("channel_palette", 0) == i) 0xFF203D5D.toInt() else card)
-                    cornerRadius = dp(10).toFloat()
-                    setStroke(dp(if (prefs.getInt("channel_palette", 0) == i) 2 else 1),
-                        if (prefs.getInt("channel_palette", 0) == i) accent else 0xFF293648.toInt())
-                }
+                applyFocusStyle(this, prefs.getInt("channel_palette", 0) == i)
                 addView(TextView(this@MainActivity).apply {
                     text = "Вариант ${i + 1}"
                     textSize = 14f
                     setTextColor(-1)
+                    isFocusable = false
                 }, LinearLayout.LayoutParams(0, dp(40), 1f))
                 addView(View(this@MainActivity).apply { setBackgroundColor(colors[0]) },
                     LinearLayout.LayoutParams(dp(32), dp(25)).apply { rightMargin = dp(5) })
@@ -1444,6 +1473,9 @@ class MainActivity : AppCompatActivity() {
             isChecked = prefs.getBoolean("back_opens_browser", true)
             minHeight = dp(48)
             isFocusable = true
+            isFocusableInTouchMode = true
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            applyFocusStyle(this)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean("back_opens_browser", checked).apply()
             }
@@ -1484,9 +1516,19 @@ class MainActivity : AppCompatActivity() {
         shell.addView(rightColumn, LinearLayout.LayoutParams(0, -1, 0.57f))
         dialog = android.app.AlertDialog.Builder(this).setView(shell).create()
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-        dialog.setOnKeyListener { _, keyCode, event ->
-            keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP
+        dialog.setOnKeyListener { dlg, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) {
+                    dialog.dismiss()
+                    window?.decorView?.requestFocus()
+                }
+                true
+            } else {
+                false
+            }
         }
+        dialog.setCancelable(true)
+        dialog.setCanceledOnTouchOutside(false)
         dialog.show()
         dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.94f).toInt(),
             (resources.displayMetrics.heightPixels * 0.90f).toInt())
@@ -1495,7 +1537,12 @@ class MainActivity : AppCompatActivity() {
             setStroke(dp(1), 0xFF2B3A4D.toInt())
         })
         refreshPreview()
-        settingsScroll.post { settingsScroll.scrollTo(0, 0) }
+        settingsScroll.post {
+            settingsScroll.scrollTo(0, 0)
+            val firstAction = settings.findViewWithTag<View>("first_menu_action")
+            firstAction?.isFocusable = true
+            firstAction?.requestFocus()
+        }
     }
 
     private fun showCategorySettings(source: List<TvChannel>) {
