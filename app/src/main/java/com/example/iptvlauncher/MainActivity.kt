@@ -1310,7 +1310,7 @@ class MainActivity : AppCompatActivity() {
             previewStatus.layoutParams = lp
             previewStatus.setPadding(dp(10), dp(if (h < 40) 3 else 7), dp(10), dp(if (h < 40) 3 else 7))
             previewStage.background = android.graphics.drawable.GradientDrawable().apply {
-                colors = intArrayOf(colors[0], colors[2])
+                setColors(intArrayOf(colors[0], colors[2]))
                 orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
                 cornerRadius = dp(14).toFloat()
             }
