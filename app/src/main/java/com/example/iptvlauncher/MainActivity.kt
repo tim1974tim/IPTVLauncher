@@ -68,6 +68,7 @@ class MainActivity : AppCompatActivity() {
     private var epgByName: Map<String, List<EpgProgramme>> = emptyMap()
     private var groups = listOf<String>()
     private var groupIndex = 0
+    private var activePlaylistSlot = 1
     private var selectedChannel = 0
     private var browserVisible = false
     private var homeReturnPending = false
@@ -182,7 +183,8 @@ class MainActivity : AppCompatActivity() {
         applyStatusAppearance()
         setContentView(root)
 
-        val savedUrl = prefs.getString("playlist_url", null)
+        activePlaylistSlot = prefs.getInt("active_playlist_slot", 1).coerceIn(1, 2)
+        val savedUrl = prefs.getString("playlist_${activePlaylistSlot}_url", null) ?: prefs.getString("playlist_url", null)
         val savedUri = prefs.getString("playlist_uri", null)
         when {
             savedUrl != null -> {
@@ -193,7 +195,7 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
                             if (parsed.isNotEmpty()) {
                                 allPlaylistChannels = parsed
-                                val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
+                                val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
                                 val visible = parsed.filter { it.group !in hidden }
                                 applyPlaylist(visible.ifEmpty { parsed }, prefs.getInt("last_channel", 0))
                                 val interval = prefs.getInt("playlist_interval_hours", 24).coerceIn(12, 48)
@@ -305,7 +307,7 @@ class MainActivity : AppCompatActivity() {
                     if (!data.isNullOrBlank()) {
                         val parsed = M3uParser.parse(data)
                         allPlaylistChannels = parsed
-                        val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
+                        val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
                         val visible = parsed.filter { it.group !in hidden }
                         if (visible.isNotEmpty()) applyPlaylist(visible, prefs.getInt("last_channel", 0))
                         else { toast("В плейлисте не найдены доступные каналы"); showSetup() }
@@ -352,10 +354,10 @@ class MainActivity : AppCompatActivity() {
                     if (parsed.isEmpty()) toast("В ответе сервера не найдены каналы M3U")
                     else {
                         allPlaylistChannels = parsed
-                        prefs.edit().putString("playlist_url", parsedUrl).remove("playlist_uri").apply()
+                        prefs.edit().putString("playlist_url", parsedUrl).putString("playlist_${activePlaylistSlot}_url", parsedUrl).remove("playlist_uri").apply()
                         prefs.edit().putLong("playlist_updated_at", System.currentTimeMillis()).apply()
                         if (showOptions) showPlaylistOptions(parsed, restoreIndex) else {
-                            val hidden = prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()
+                            val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
                             val visible = parsed.filter { it.group !in hidden }
                             applyPlaylist(visible.ifEmpty { parsed }, restoreIndex)
                         }
@@ -393,7 +395,7 @@ class MainActivity : AppCompatActivity() {
         }
         panel.addView(label("Настройки плейлиста", 26f))
         panel.addView(label("Выберите категории, которые нужно показывать", 17f))
-        val hidden = prefs.getStringSet("hidden_groups", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val hidden = (prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()).toMutableSet()
         val categoryScroll = ScrollView(this).apply { isFillViewport = true }
         val categoryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         parsed.map { it.group }.distinct().forEach { group ->
@@ -435,7 +437,7 @@ class MainActivity : AppCompatActivity() {
                 return@button
             }
             val hours = when (interval.selectedItemPosition) { 0 -> 12; 2 -> 48; else -> 24 }
-            prefs.edit().putStringSet("hidden_groups", hiddenGroups)
+            prefs.edit().putStringSet("hidden_groups", hiddenGroups).putStringSet("hidden_groups_${activePlaylistSlot}", hiddenGroups)
                 .putInt("playlist_interval_hours", hours)
                 .putLong("playlist_updated_at", System.currentTimeMillis()).apply()
             optionsWrapper?.let { root.removeView(it) }
@@ -468,7 +470,15 @@ class MainActivity : AppCompatActivity() {
         setupFocusIndex = 0
         channels.clear()
         channels.addAll(parsed)
-        groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
+        val currentUrls = channels.map { it.url }.toSet()
+        val favs = favoriteChannels().map { it.url }.filter { it in currentUrls }.toSet()
+        groups = (if (favs.isNotEmpty()) listOf("Избранное") else emptyList()) +
+            channels.map { it.group }.distinct().filter { it != "Избранное" }
+        if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) {
+            channels.retainAll { it.url in favs }
+            groups = if (channels.isNotEmpty()) listOf("Избранное") else emptyList()
+        }
+        if (groups.isEmpty()) groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
         groupIndex = 0
         val index = resolveLastChannelIndex(channels, restoreIndex)
         selectedChannel = index
@@ -522,7 +532,7 @@ class MainActivity : AppCompatActivity() {
         if (channels.isEmpty()) return
         playbackBar.removeAllViews()
         val category = groups.getOrNull(groupIndex) ?: "Без категории"
-        val inGroup = channels.indices.filter { channels[it].group == category }
+        val inGroup = channels.indices.filter { if (category == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == category }
         val position = inGroup.indexOf(selectedChannel).coerceAtLeast(0)
         val channel = channels.getOrNull(selectedChannel) ?: return
 
@@ -902,7 +912,7 @@ class MainActivity : AppCompatActivity() {
     private fun changeChannelInGroup(direction: Int) {
         if (channels.isEmpty()) return
         val category = groups.getOrNull(groupIndex) ?: return
-        val indices = channels.indices.filter { channels[it].group == category }
+        val indices = channels.indices.filter { if (category == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == category }
         if (indices.isEmpty()) return
         val position = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
         val nextPosition = (position + direction).coerceIn(0, indices.lastIndex)
@@ -959,7 +969,7 @@ class MainActivity : AppCompatActivity() {
         if (!browserVisible) return
         channelList.removeAllViews()
         channelList.addView(label("${groups.getOrNull(groupIndex) ?: "КАНАЛЫ"}  •  КАНАЛЫ", 20f))
-        val indices = channels.indices.filter { channels[it].group == groups[groupIndex] }
+        val indices = channels.indices.filter { if (groups[groupIndex] == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == groups[groupIndex] }
         var selectedRow: View? = null
         indices.forEach { index ->
             val isSelected = index == selectedChannel
@@ -1063,6 +1073,10 @@ class MainActivity : AppCompatActivity() {
                 if (event.action == KeyEvent.ACTION_UP) {
                     statusHandler.removeCallbacks(longOkRunnable)
                     if (okLongPressTriggered) { okLongPressTriggered = false; return true }
+                    if (!prefs.getBoolean("back_opens_browser", true)) {
+                        updatePlaybackBar()
+                        showPlaybackBarForThreeSeconds()
+                    }
                     return true
                 }
             }
@@ -1143,7 +1157,7 @@ class MainActivity : AppCompatActivity() {
                 return super.dispatchKeyEvent(event)
             }
             if (browserVisible) {
-                val visible = channels.indices.filter { channels[it].group == groups[groupIndex] }
+                val visible = channels.indices.filter { if (groups[groupIndex] == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == groups[groupIndex] }
                 if (visible.isNotEmpty()) {
                     val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
                     when (keyCode) {
@@ -1186,7 +1200,29 @@ class MainActivity : AppCompatActivity() {
     private fun statusAlpha() = prefs.getInt("status_alpha", 85).coerceIn(20, 100)
     private fun statusBackgroundColor(): Int { val a = (statusAlpha() * 255 / 100) shl 24; return a or 0x00000000 }
     private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
-    private fun currentPalette() = palettes[prefs.getInt("channel_palette", 0).coerceIn(0, palettes.lastIndex)]
+    private fun currentPalette(): IntArray {
+        val base = palettes[prefs.getInt("channel_palette", 0).coerceIn(0, palettes.lastIndex)]
+        val saturation = prefs.getInt("ui_saturation", 100).coerceIn(0, 200) / 100f
+        val vividness = prefs.getInt("ui_colorfulness", 100).coerceIn(0, 200) / 100f
+        return base.map { color ->
+            val hsv = FloatArray(3)
+            android.graphics.Color.colorToHSV(color, hsv)
+            hsv[1] = (hsv[1] * saturation * vividness).coerceIn(0f, 1f)
+            hsv[2] = (hsv[2] * (0.85f + vividness * 0.15f)).coerceIn(0f, 1f)
+            android.graphics.Color.HSVToColor(android.graphics.Color.alpha(color), hsv)
+        }.toIntArray()
+    }
+
+    private fun favoriteKey() = "favorites_${activePlaylistSlot}"
+    private fun favoriteUrls(): MutableSet<String> = (prefs.getStringSet(favoriteKey(), emptySet()) ?: emptySet()).toMutableSet()
+    private fun favoriteChannels(): List<TvChannel> = allPlaylistChannels.filter { it.url in favoriteUrls() }
+
+    private fun visiblePlaylistChannels(source: List<TvChannel>): List<TvChannel> {
+        val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
+        val categoryFiltered = source.filter { it.group !in hidden }
+        return if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) favoriteChannels()
+        else (categoryFiltered + favoriteChannels().filter { fav -> categoryFiltered.none { it.url == fav.url } }).distinctBy { it.url }
+    }
 
     private fun applyStatusAppearance() {
         if (!::playbackBar.isInitialized) return
@@ -1483,44 +1519,33 @@ class MainActivity : AppCompatActivity() {
             })
         })
 
-        section("ЦВЕТОВАЯ ПАЛИТРА")
-        palettes.indices.forEach { i ->
-            val colors = palettes[i]
-            val paletteRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(5), dp(10), dp(5))
-                isFocusable = true
-                isFocusableInTouchMode = true
-                applyFocusStyle(this, prefs.getInt("channel_palette", 0) == i)
-                if (prefs.getInt("channel_palette", 0) == i) {
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(colors[2])
-                        cornerRadius = dp(11).toFloat()
-                        setStroke(dp(2), colors[1])
-                    }
-                }
-                addView(TextView(this@MainActivity).apply {
-                    text = listOf("Океан", "Изумруд", "Аметист", "Янтарь", "Рубин")[i]
-                    textSize = 14f
-                    setTextColor(-1)
-                    isFocusable = false
-                }, LinearLayout.LayoutParams(0, dp(40), 1f))
-                addView(View(this@MainActivity).apply { setBackgroundColor(colors[0]) },
-                    LinearLayout.LayoutParams(dp(32), dp(25)).apply { rightMargin = dp(5) })
-                addView(View(this@MainActivity).apply { setBackgroundColor(colors[1]) },
-                    LinearLayout.LayoutParams(dp(32), dp(25)))
-                setOnClickListener {
-                    prefs.edit().putInt("channel_palette", i).apply()
-                    if (browserVisible) refreshChannels()
+        section("НАСЫЩЕННОСТЬ ИНТЕРФЕЙСА")
+        fun addThemeSlider(title: String, key: String) {
+            val valueLabel = TextView(this).apply { textSize = 13f; setTextColor(0xFFE5EAF2.toInt()) }
+            settings.addView(valueLabel)
+            settings.addView(SeekBar(this).apply {
+                max = 200
+                progress = prefs.getInt(key, 100).coerceIn(0, 200)
+                isFocusable = true; isFocusableInTouchMode = true
+                progressTintList = android.content.res.ColorStateList.valueOf(accent)
+                thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
+                fun update(v: Int) {
+                    valueLabel.text = "$title: $v%"
+                    prefs.edit().putInt(key, v).apply()
                     refreshPreview()
-                    // Перестраиваем строки, чтобы подсветить выбранную палитру.
-                    dialog.dismiss()
-                    showAppearanceSettings()
+                    if (browserVisible) refreshChannels()
                 }
-            }
-            settings.addView(paletteRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+                update(progress)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { if (fromUser) update(progress) }
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                })
+            })
         }
+        addThemeSlider("Насыщенность", "ui_saturation")
+        section("ЦВЕТНОСТЬ ИНТЕРФЕЙСА")
+        addThemeSlider("Цветность", "ui_colorfulness")
 
         section("ПОВЕДЕНИЕ КНОПКИ НАЗАД")
         val backOption = CheckBox(this).apply {
@@ -1539,6 +1564,42 @@ class MainActivity : AppCompatActivity() {
             }
         }
         settings.addView(backOption)
+
+        section("ПЛЕЙЛИСТЫ")
+        settingButton("Активный плейлист: ${activePlaylistSlot}") {
+            val choices = arrayOf("Плейлист 1", "Плейлист 2")
+            android.app.AlertDialog.Builder(this).setTitle("Выберите активный плейлист")
+                .setSingleChoiceItems(choices, activePlaylistSlot - 1) { d, which ->
+                    activePlaylistSlot = which + 1
+                    prefs.edit().putInt("active_playlist_slot", activePlaylistSlot).apply()
+                    val url = prefs.getString("playlist_${activePlaylistSlot}_url", null)
+                    d.dismiss()
+                    if (!url.isNullOrBlank()) fetchPlaylist(url, 0, false)
+                    else toast("Укажите адрес плейлиста ${activePlaylistSlot}")
+                    dialog.dismiss()
+                }.setNegativeButton("Отмена", null).show()
+        }
+        settingButton("Настройка плейлиста 1") { showPlaylistSourceEditor(1) }
+        settingButton("Настройка плейлиста 2") { showPlaylistSourceEditor(2) }
+        val onlyFav = CheckBox(this).apply {
+            text = "Только избранные каналы"
+            textSize = 14f; setTextColor(0xFFE5EAF2.toInt())
+            buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+            isChecked = prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)
+            isFocusable = true; isFocusableInTouchMode = true; minHeight = dp(48)
+            setOnCheckedChangeListener { _, checked ->
+                val source = allPlaylistChannels.ifEmpty { channels.toList() }
+                if (checked && favoriteChannels().isEmpty()) {
+                    toast("Сначала добавьте каналы в избранное")
+                    isChecked = false
+                    return@setOnCheckedChangeListener
+                }
+                prefs.edit().putBoolean("only_favorites_${activePlaylistSlot}", checked).apply()
+                val filtered = visiblePlaylistChannels(source)
+                if (filtered.isNotEmpty()) applyPlaylist(filtered, selectedChannel, reloadEpg = false)
+            }
+        }
+        settings.addView(onlyFav)
 
         section("ДОПОЛНИТЕЛЬНО")
         settingButton("Адреса плейлиста и EPG") {
@@ -1565,6 +1626,7 @@ class MainActivity : AppCompatActivity() {
             val source = allPlaylistChannels.ifEmpty { channels.toList() }
             if (source.isNotEmpty()) showCategorySettings(source)
         }
+        settingButton("Настройка избранного") { showFavoritesSettings() }
         settingButton("Открыть настройки приставки") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
                 .onFailure { toast("Не удалось открыть настройки приставки") }
@@ -1623,9 +1685,55 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showPlaylistSourceEditor(slot: Int) {
+        val url = EditText(this).apply { hint = "Ссылка M3U / M3U8"; setSingleLine(true); setText(prefs.getString("playlist_${slot}_url", if (slot == 1) prefs.getString("playlist_url", "") else "")) }
+        val epg = EditText(this).apply { hint = "Ссылка EPG XMLTV (необязательно)"; setSingleLine(true); setText(prefs.getString("playlist_${slot}_epg", "")) }
+        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)); addView(url); addView(epg) }
+        android.app.AlertDialog.Builder(this).setTitle("Настройка плейлиста $slot").setView(fields)
+            .setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ ->
+                val address = url.text.toString().trim()
+                prefs.edit().putString("playlist_${slot}_url", address).putString("playlist_${slot}_epg", epg.text.toString().trim()).apply()
+                if (address.startsWith("http://") || address.startsWith("https://")) {
+                    activePlaylistSlot = slot
+                    prefs.edit().putInt("active_playlist_slot", slot).putString("playlist_url", address).putString("epg_url", epg.text.toString().trim()).apply()
+                    fetchPlaylist(address, 0, false)
+                } else toast("Адрес плейлиста сохранён")
+            }.show()
+    }
+
+    private fun showFavoritesSettings() {
+        val source = allPlaylistChannels.ifEmpty { channels.toList() }
+        if (source.isEmpty()) { toast("Сначала загрузите плейлист"); return }
+        val selected = favoriteUrls()
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        source.forEach { channel ->
+            list.addView(CheckBox(this).apply {
+                text = channel.name; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
+                buttonTintList = android.content.res.ColorStateList.valueOf(currentPalette()[1])
+                isChecked = channel.url in selected; isFocusable = true; isFocusableInTouchMode = true
+                tag = channel.url; minHeight = dp(46)
+            })
+        }
+        val scroll = ScrollView(this).apply { addView(list) }
+        val dialog = android.app.AlertDialog.Builder(this).setTitle("Избранные каналы — плейлист $activePlaylistSlot")
+            .setView(scroll).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val favorites = mutableSetOf<String>()
+                for (i in 0 until list.childCount) { val cb = list.getChildAt(i) as CheckBox; if (cb.isChecked) favorites.add(cb.tag as String) }
+                prefs.edit().putStringSet(favoriteKey(), favorites).apply()
+                dialog.dismiss()
+                val filtered = visiblePlaylistChannels(source)
+                if (filtered.isNotEmpty()) applyPlaylist(filtered, selectedChannel, reloadEpg = false)
+                else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) toast("Избранное пусто — отключите фильтр избранного")
+            }
+        }
+        dialog.show()
+    }
+
     private fun showCategorySettings(source: List<TvChannel>) {
         val allGroups = source.map { it.group }.distinct()
-        val hidden = (prefs.getStringSet("hidden_groups", emptySet()) ?: emptySet()).toMutableSet()
+        val hidden = (prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()).toMutableSet()
         // Include saved hidden categories even if the current visible channel list does not contain them.
         val groupsToShow = (allGroups + hidden).distinct()
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(12), dp(18), dp(12)) }
@@ -1655,7 +1763,7 @@ class MainActivity : AppCompatActivity() {
                 }.toMutableSet()
                 val filtered = source.filter { it.group !in newHidden }
                 if (filtered.isEmpty()) { toast("Оставьте включённой хотя бы одну категорию"); return@setOnClickListener }
-                prefs.edit().putStringSet("hidden_groups", newHidden).apply()
+                prefs.edit().putStringSet("hidden_groups", newHidden).putStringSet("hidden_groups_${activePlaylistSlot}", newHidden).apply()
                 dialog.dismiss()
                 // Меняется только фильтр отображения. Ни плейлист, ни EPG не загружаются повторно.
                 applyPlaylist(filtered, selectedChannel, reloadEpg = false)
@@ -1680,7 +1788,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectFirstChannelInGroup() {
-        selectedChannel = channels.indexOfFirst { it.group == groups[groupIndex] }.coerceAtLeast(0)
+        selectedChannel = channels.indexOfFirst { if (groups[groupIndex] == "Избранное") it.url in favoriteUrls() else it.group == groups[groupIndex] }.coerceAtLeast(0)
     }
 
     private fun statusText(value: String, size: Float) = TextView(this).apply {
