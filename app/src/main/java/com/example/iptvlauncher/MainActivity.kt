@@ -1224,10 +1224,11 @@ class MainActivity : AppCompatActivity() {
     private fun statusSizeScale() = when (prefs.getString("status_size", "large")) { "medium" -> 0.8f; "small" -> 0.5f; else -> 1f }
     private fun statusAlpha() = prefs.getInt("status_alpha", 85).coerceIn(20, 100)
     private fun statusBackgroundColor(): Int {
-        // Фон всплывающего меню канала (playbackBar), а не системного status bar.
-        val uiFactor = 1f - prefs.getInt("ui_transparency", 0).coerceIn(0, 90) / 100f
-        val alpha = (statusAlpha() * uiFactor * 255f / 100f).toInt().coerceIn(0, 255)
-        return (alpha shl 24) or 0x00101722
+        // Реальный фон плашки поверх видео. Используем ту же палитру и
+        // прозрачность, что и в предпросмотре настроек; статус-бар Android не меняем.
+        val base = currentPalette()[2]
+        val alpha = (statusAlpha() * 255f / 100f).toInt().coerceIn(0, 255)
+        return (alpha shl 24) or (base and 0x00FFFFFF)
     }
     private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
     private fun uiPanelColor(color: Int): Int {
@@ -1753,51 +1754,88 @@ class MainActivity : AppCompatActivity() {
         val visibleSource = source.filter { it.group !in hiddenGroups }
         if (visibleSource.isEmpty()) { toast("Нет каналов в отображаемых категориях"); return }
 
+        val originallySelected = favoriteUrls()
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         visibleSource.forEach { channel ->
-            val checkBox = CheckBox(this).apply {
-                text = channel.name
-                textSize = 16f
-                setTextColor(0xFFFFFFFF.toInt())
+            list.addView(CheckBox(this).apply {
+                text = channel.name; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
                 buttonTintList = android.content.res.ColorStateList.valueOf(currentPalette()[1])
-                isChecked = channel.url in favoriteUrls()
-                isFocusable = true
-                isFocusableInTouchMode = true
+                isChecked = channel.url in originallySelected
+                isFocusable = true; isFocusableInTouchMode = true
                 id = View.generateViewId()
-                tag = channel.url
-                minHeight = dp(46)
-            }
-            // Сохраняем каждое изменение сразу: BACK просто закрывает окно.
-            checkBox.setOnCheckedChangeListener { _, checked ->
-                val updated = favoriteUrls()
-                if (checked) updated.add(channel.url) else updated.remove(channel.url)
-                prefs.edit().putStringSet(favoriteKey(), updated).apply()
-            }
-            list.addView(checkBox)
+                tag = channel.url; minHeight = dp(46)
+            })
         }
-
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             isFocusable = false
             addView(list)
         }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            addView(scroll, LinearLayout.LayoutParams(0, dp(420), 1f))
+            addView(actions, LinearLayout.LayoutParams(dp(150), dp(420)))
+        }
         val dialog = android.app.AlertDialog.Builder(this)
             .setTitle("Избранные каналы — плейлист $activePlaylistSlot")
-            .setView(scroll)
+            .setView(content)
             .create()
 
-        dialog.setOnDismissListener {
-            // Обновляем активный список после закрытия, используя уже сохранённое избранное.
-            val filtered = visiblePlaylistChannels(source)
-            if (filtered.isNotEmpty()) {
-                applyPlaylist(filtered, selectedChannel.coerceIn(0, filtered.lastIndex), reloadEpg = false)
-            } else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) {
-                toast("Избранное пусто — отключите фильтр избранного")
+        fun collectFavorites(): MutableSet<String> {
+            val visibleUrls = visibleSource.map { it.url }.toSet()
+            val result = originallySelected.filter { it !in visibleUrls }.toMutableSet()
+            for (i in 0 until list.childCount) {
+                val cb = list.getChildAt(i) as CheckBox
+                if (cb.isChecked) result.add(cb.tag as String)
             }
+            return result
+        }
+        fun saveFavorites() {
+            prefs.edit().putStringSet(favoriteKey(), collectFavorites()).apply()
+            dialog.dismiss()
+            val filtered = visiblePlaylistChannels(source)
+            if (filtered.isNotEmpty()) applyPlaylist(filtered, selectedChannel, reloadEpg = false)
+            else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false))
+                toast("Избранное пусто — отключите фильтр избранного")
+        }
+        fun actionButton(title: String, action: () -> Unit) = Button(this).apply {
+            text = title; isAllCaps = false; textSize = 15f; minHeight = dp(52)
+            isFocusable = true; isFocusableInTouchMode = true
+            setTextColor(0xFFFFFFFF.toInt())
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(currentPalette()[2]); cornerRadius = dp(10).toFloat()
+                setStroke(dp(2), currentPalette()[1])
+            }
+            setOnClickListener { action() }
+        }
+        val saveButton = actionButton("Сохранить") { saveFavorites() }.apply { id = View.generateViewId() }
+        val cancelButton = actionButton("Отмена") { dialog.dismiss() }.apply { id = View.generateViewId() }
+        actions.addView(saveButton, LinearLayout.LayoutParams(-1, dp(56)).apply { bottomMargin = dp(12) })
+        actions.addView(cancelButton, LinearLayout.LayoutParams(-1, dp(56)))
+
+        // Влево из любого чекбокса — «Сохранить», вправо — «Отмена».
+        // OK/ENTER остаются стандартным переключением CheckBox.
+        for (i in 0 until list.childCount) {
+            val item = list.getChildAt(i)
+            item.nextFocusLeftId = saveButton.id
+            item.nextFocusRightId = cancelButton.id
+        }
+        saveButton.nextFocusRightId = cancelButton.id
+        saveButton.nextFocusLeftId = list.getChildAt(0).id
+        cancelButton.nextFocusLeftId = saveButton.id
+        cancelButton.nextFocusRightId = list.getChildAt(0).id
+        dialog.setOnShowListener {
+            list.getChildAt(0)?.requestFocus()
         }
         dialog.setCanceledOnTouchOutside(false)
         dialog.show()
-        list.getChildAt(0)?.requestFocus()
+        (list.getChildAt(0) as? View)?.requestFocus()
     }
 
     private fun showCategorySettings(source: List<TvChannel>) {
