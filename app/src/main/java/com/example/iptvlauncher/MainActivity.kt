@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private var okLongPressTriggered = false
     private val longOkRunnable = Runnable { if (!browserVisible && channels.isNotEmpty()) { okLongPressTriggered = true; showAppearanceSettings() } }
     private val palettes = listOf(
+        intArrayOf(0xFF252525.toInt(), 0xFFFFFFFF.toInt(), 0xFF101010.toInt()), // Чёрно-белая
         intArrayOf(0xFF145B91.toInt(), 0xFF45C7FF.toInt(), 0xFF17334B.toInt()), // Океан
         intArrayOf(0xFF176B4A.toInt(), 0xFF63E6A5.toInt(), 0xFF183D30.toInt()), // Изумруд
         intArrayOf(0xFF59318A.toInt(), 0xFFC49AFF.toInt(), 0xFF34204F.toInt()), // Аметист
@@ -1255,13 +1256,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun epgIntervalHours(slot: Int) =
         prefs.getInt("playlist_${slot}_epg_interval_hours", 24).coerceIn(6, 72)
-    private fun currentPalette(): IntArray {
-        val palettes = listOf(
-            intArrayOf(0xFF145B91.toInt(), 0xFF45C7FF.toInt(), 0xFF17334B.toInt()),
-            intArrayOf(0xFF176B4A.toInt(), 0xFF63E6A5.toInt(), 0xFF183D30.toInt()),
-            intArrayOf(0xFF56358C.toInt(), 0xFFFFC857.toInt(), 0xFF302044.toInt())
-        )
-        return palettes[prefs.getInt("channel_palette", 0).coerceIn(0, palettes.lastIndex)]
+    private fun currentPalette(): IntArray =
+        palettes[prefs.getInt("channel_palette", 0).mod(palettes.size)]
+
+    private fun paletteName(index: Int): String = when (index.mod(palettes.size)) {
+        0 -> "Чёрно-белая"
+        1 -> "Океан"
+        2 -> "Изумруд"
+        3 -> "Аметист"
+        4 -> "Янтарь"
+        else -> "Рубин"
     }
 
     private fun favoriteKey() = "favorites_${activePlaylistSlot}"
@@ -1449,9 +1453,8 @@ class MainActivity : AppCompatActivity() {
                 orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
                 cornerRadius = dp(14).toFloat()
             }
-            previewCaption.text = "Палитра ${prefs.getInt("channel_palette", 0) + 1}  ·  " +
-                "Насыщенность ${prefs.getInt("ui_saturation", 100)}%  ·  " +
-                "Прозрачность ${prefs.getInt("ui_transparency", 0)}%"
+            previewCaption.text = "Схема: ${paletteName(prefs.getInt("channel_palette", 0))}  ·  " +
+                "Прозрачность статус-бара ${statusAlpha()}%"
             // Цветовая схема видна сразу: фон сцены, статус-бар и акцентная рамка.
             previewStatus.background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(translucent)
@@ -1566,24 +1569,49 @@ class MainActivity : AppCompatActivity() {
             })
         })
 
-        section("ЦВЕТОВАЯ ПАЛИТРА")
-        val paletteChoices = listOf(
-            "Сине-голубая — контрастная",
-            "Изумрудная — контрастная",
-            "Фиолетово-золотая — контрастная"
-        )
-        paletteChoices.forEachIndexed { index, title ->
-            settingButton(title, prefs.getInt("channel_palette", 0) == index) {
-                prefs.edit().putInt("channel_palette", index)
-                    .putInt("ui_saturation", 100)
-                    .putInt("ui_colorfulness", 0)
-                    .apply()
-                if (browserVisible) {
-                    refreshChannels()
-                    refreshProgrammeDetails()
-                }
-                updatePlaybackBar()
+        section("ПРОЗРАЧНОСТЬ ИНТЕРФЕЙСА")
+        val transparencyLabel = TextView(this).apply {
+            textSize = 13f
+            setTextColor(0xFFE5EAF2.toInt())
+        }
+        settings.addView(transparencyLabel)
+        settings.addView(SeekBar(this).apply {
+            max = 90
+            progress = prefs.getInt("ui_transparency", 0).coerceIn(0, 90)
+            isFocusable = true; isFocusableInTouchMode = true
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
+            fun update(value: Int) {
+                prefs.edit().putInt("ui_transparency", value).apply()
+                transparencyLabel.text = "Прозрачность интерфейса: $value%"
+                applyInterfaceOpacity()
+                refreshPreview()
             }
+            update(progress)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) update(progress)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        })
+
+        section("ЦВЕТОВАЯ СХЕМА")
+        settingButton("Цветовая схема: ${paletteName(prefs.getInt("channel_palette", 0))}  ›") {
+            val next = (prefs.getInt("channel_palette", 0) + 1).mod(palettes.size)
+            prefs.edit().putInt("channel_palette", next).apply()
+            refreshPreview()
+            if (browserVisible) {
+                refreshChannels()
+                refreshProgrammeDetails()
+                applyInterfaceOpacity()
+            }
+            if (::playbackBar.isInitialized && playbackBar.visibility == View.VISIBLE) updatePlaybackBar()
+            toast("Цветовая схема: ${paletteName(next)}")
+            // Обновляем подпись пункта, чтобы выбранная схема была видна сразу.
+            (settings.getChildAt(settings.childCount - 1) as? Button)?.text =
+                "Цветовая схема: ${paletteName(next)}  ›"
         }
 
         section("ПОВЕДЕНИЕ КНОПКИ НАЗАД")
@@ -1754,26 +1782,37 @@ class MainActivity : AppCompatActivity() {
         if (visibleSource.isEmpty()) { toast("Нет каналов в отображаемых категориях"); return }
 
         val originallySelected = favoriteUrls()
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-        }
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         visibleSource.forEach { channel ->
             list.addView(CheckBox(this).apply {
-                text = channel.name
-                textSize = 16f
-                setTextColor(0xFFFFFFFF.toInt())
+                text = channel.name; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
                 buttonTintList = android.content.res.ColorStateList.valueOf(currentPalette()[1])
                 isChecked = channel.url in originallySelected
-                isFocusable = true
-                isFocusableInTouchMode = true
-                tag = channel.url
-                minHeight = dp(46)
+                isFocusable = true; isFocusableInTouchMode = true
+                id = View.generateViewId()
+                tag = channel.url; minHeight = dp(46)
             })
         }
-        val scroll = ScrollView(this).apply { addView(list) }
-        panel.addView(scroll, LinearLayout.LayoutParams(dp(560), dp(390), 1f))
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isFocusable = false
+            addView(list)
+        }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            addView(scroll, LinearLayout.LayoutParams(0, dp(420), 1f))
+            addView(actions, LinearLayout.LayoutParams(dp(150), dp(420)))
+        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Избранные каналы — плейлист $activePlaylistSlot")
+            .setView(content)
+            .create()
 
         fun collectFavorites(): MutableSet<String> {
             val visibleUrls = visibleSource.map { it.url }.toSet()
@@ -1784,48 +1823,43 @@ class MainActivity : AppCompatActivity() {
             }
             return result
         }
-
-        val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Избранные каналы — плейлист $activePlaylistSlot")
-            .setView(panel)
-            .create()
-
         fun saveFavorites() {
             prefs.edit().putStringSet(favoriteKey(), collectFavorites()).apply()
             dialog.dismiss()
             val filtered = visiblePlaylistChannels(source)
             if (filtered.isNotEmpty()) applyPlaylist(filtered, selectedChannel, reloadEpg = false)
-            else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) {
+            else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false))
                 toast("Избранное пусто — отключите фильтр избранного")
+        }
+        fun actionButton(title: String, action: () -> Unit) = Button(this).apply {
+            text = title; isAllCaps = false; textSize = 15f; minHeight = dp(52)
+            isFocusable = true; isFocusableInTouchMode = true
+            setTextColor(0xFFFFFFFF.toInt())
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(currentPalette()[2]); cornerRadius = dp(10).toFloat()
+                setStroke(dp(2), currentPalette()[1])
             }
+            setOnClickListener { action() }
         }
+        val saveButton = actionButton("Сохранить") { saveFavorites() }.apply { id = View.generateViewId() }
+        val cancelButton = actionButton("Отмена") { dialog.dismiss() }.apply { id = View.generateViewId() }
+        actions.addView(saveButton, LinearLayout.LayoutParams(-1, dp(56)).apply { bottomMargin = dp(12) })
+        actions.addView(cancelButton, LinearLayout.LayoutParams(-1, dp(56)))
 
-        val footer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(0, dp(10), 0, 0)
+        // Горизонтальная навигация: из списка вправо сразу на «Сохранить», далее на «Отмена».
+        for (i in 0 until list.childCount) {
+            list.getChildAt(i).nextFocusRightId = saveButton.id
         }
-        val saveButton = Button(this).apply {
-            text = "Сохранить"
-            isAllCaps = false
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnClickListener { saveFavorites() }
+        saveButton.nextFocusRightId = cancelButton.id
+        saveButton.nextFocusLeftId = (list.getChildAt(0) as? View)?.id ?: View.NO_ID
+        cancelButton.nextFocusLeftId = saveButton.id
+        dialog.setOnShowListener {
+            saveButton.requestFocus()
+            (list.getChildAt(0) as? View)?.nextFocusRightId = saveButton.id
         }
-        val cancelButton = Button(this).apply {
-            text = "Отмена"
-            isAllCaps = false
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnClickListener { dialog.dismiss() }
-        }
-        footer.addView(saveButton, LinearLayout.LayoutParams(dp(150), dp(48)).apply { marginEnd = dp(8) })
-        footer.addView(cancelButton, LinearLayout.LayoutParams(dp(130), dp(48)))
-        panel.addView(footer)
         dialog.setCanceledOnTouchOutside(false)
         dialog.show()
-        // Фокус начинается в списке; переход вправо переводит к кнопкам действий.
-        list.getChildAt(0)?.requestFocus()
+        (list.getChildAt(0) as? View)?.requestFocus()
     }
 
     private fun showCategorySettings(source: List<TvChannel>) {
