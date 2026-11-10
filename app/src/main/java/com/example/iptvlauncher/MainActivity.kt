@@ -1569,34 +1569,6 @@ class MainActivity : AppCompatActivity() {
             })
         })
 
-        section("ПРОЗРАЧНОСТЬ ИНТЕРФЕЙСА")
-        val transparencyLabel = TextView(this).apply {
-            textSize = 13f
-            setTextColor(0xFFE5EAF2.toInt())
-        }
-        settings.addView(transparencyLabel)
-        settings.addView(SeekBar(this).apply {
-            max = 90
-            progress = prefs.getInt("ui_transparency", 0).coerceIn(0, 90)
-            isFocusable = true; isFocusableInTouchMode = true
-            progressTintList = android.content.res.ColorStateList.valueOf(accent)
-            thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
-            fun update(value: Int) {
-                prefs.edit().putInt("ui_transparency", value).apply()
-                transparencyLabel.text = "Прозрачность интерфейса: $value%"
-                applyInterfaceOpacity()
-                refreshPreview()
-            }
-            update(progress)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser) update(progress)
-                }
-                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-            })
-        })
-
         section("ЦВЕТОВАЯ СХЕМА")
         settingButton("Цветовая схема: ${paletteName(prefs.getInt("channel_palette", 0))}  ›") {
             val next = (prefs.getInt("channel_palette", 0) + 1).mod(palettes.size)
@@ -1846,16 +1818,19 @@ class MainActivity : AppCompatActivity() {
         actions.addView(saveButton, LinearLayout.LayoutParams(-1, dp(56)).apply { bottomMargin = dp(12) })
         actions.addView(cancelButton, LinearLayout.LayoutParams(-1, dp(56)))
 
-        // Горизонтальная навигация: из списка вправо сразу на «Сохранить», далее на «Отмена».
+        // Влево из любого чекбокса — «Сохранить», вправо — «Отмена».
+        // OK/ENTER остаются стандартным переключением CheckBox.
         for (i in 0 until list.childCount) {
-            list.getChildAt(i).nextFocusRightId = saveButton.id
+            val item = list.getChildAt(i)
+            item.nextFocusLeftId = saveButton.id
+            item.nextFocusRightId = cancelButton.id
         }
         saveButton.nextFocusRightId = cancelButton.id
-        saveButton.nextFocusLeftId = (list.getChildAt(0) as? View)?.id ?: View.NO_ID
+        saveButton.nextFocusLeftId = list.getChildAt(0).id
         cancelButton.nextFocusLeftId = saveButton.id
+        cancelButton.nextFocusRightId = list.getChildAt(0).id
         dialog.setOnShowListener {
-            saveButton.requestFocus()
-            (list.getChildAt(0) as? View)?.nextFocusRightId = saveButton.id
+            list.getChildAt(0)?.requestFocus()
         }
         dialog.setCanceledOnTouchOutside(false)
         dialog.show()
