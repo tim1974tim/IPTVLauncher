@@ -33,6 +33,15 @@ class MainActivity : AppCompatActivity() {
     private val statusHandler = Handler(Looper.getMainLooper())
     private var okLongPressTriggered = false
     private val longOkRunnable = Runnable { if (!browserVisible && channels.isNotEmpty()) { okLongPressTriggered = true; showAppearanceSettings() } }
+    private val statusBarColors = listOf(
+        0xFF101010.toInt(), // Чёрный
+        0xFF30343B.toInt(), // Тёмно-серый
+        0xFF123B66.toInt(), // Синий
+        0xFF174B36.toInt(), // Зелёный
+        0xFF43265F.toInt(), // Фиолетовый
+        0xFF642638.toInt()  // Бордовый
+    )
+    private val statusBarColorNames = listOf("Чёрный", "Тёмно-серый", "Синий", "Зелёный", "Фиолетовый", "Бордовый")
     private val palettes = listOf(
         intArrayOf(0xFF252525.toInt(), 0xFFFFFFFF.toInt(), 0xFF101010.toInt()), // Чёрно-белая
         intArrayOf(0xFF145B91.toInt(), 0xFF45C7FF.toInt(), 0xFF17334B.toInt()), // Океан
@@ -1224,9 +1233,8 @@ class MainActivity : AppCompatActivity() {
     private fun statusSizeScale() = when (prefs.getString("status_size", "large")) { "medium" -> 0.8f; "small" -> 0.5f; else -> 1f }
     private fun statusAlpha() = prefs.getInt("status_alpha", 85).coerceIn(20, 100)
     private fun statusBackgroundColor(): Int {
-        // Реальный фон плашки поверх видео. Используем ту же палитру и
-        // прозрачность, что и в предпросмотре настроек; статус-бар Android не меняем.
-        val base = currentPalette()[2]
+        // Независимый цвет статус-бара: не зависит от общей палитры интерфейса.
+        val base = statusBarColors[prefs.getInt("status_bar_color", 0).mod(statusBarColors.size)]
         val alpha = (statusAlpha() * 255f / 100f).toInt().coerceIn(0, 255)
         return (alpha shl 24) or (base and 0x00FFFFFF)
     }
@@ -1431,7 +1439,7 @@ class MainActivity : AppCompatActivity() {
         fun refreshPreview() {
             val colors = currentPalette()
             val opacity = statusAlpha()
-            val base = colors[2]
+            val base = statusBarColors[prefs.getInt("status_bar_color", 0).mod(statusBarColors.size)]
             val translucent = android.graphics.Color.argb(
                 (opacity * 255 / 100).coerceIn(0, 255),
                 android.graphics.Color.red(base),
@@ -1455,7 +1463,8 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = dp(14).toFloat()
             }
             previewCaption.text = "Схема: ${paletteName(prefs.getInt("channel_palette", 0))}  ·  " +
-                "Прозрачность статус-бара ${statusAlpha()}%"
+                "Статус-бар: ${statusBarColorNames[prefs.getInt("status_bar_color", 0).mod(statusBarColors.size)]}  ·  " +
+                "Прозрачность ${statusAlpha()}%"
             // Цветовая схема видна сразу: фон сцены, статус-бар и акцентная рамка.
             previewStatus.background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(translucent)
@@ -1569,6 +1578,17 @@ class MainActivity : AppCompatActivity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {}
             })
         })
+
+        section("ЦВЕТ СТАТУС-БАРА")
+        settingButton("Цвет статус-бара: ${statusBarColorNames[prefs.getInt("status_bar_color", 0).mod(statusBarColors.size)]}  ›") {
+            val next = (prefs.getInt("status_bar_color", 0) + 1).mod(statusBarColors.size)
+            prefs.edit().putInt("status_bar_color", next).apply()
+            applyStatusAppearance()
+            refreshPreview()
+            (settings.getChildAt(settings.childCount - 1) as? Button)?.text =
+                "Цвет статус-бара: ${statusBarColorNames[next]}  ›"
+            toast("Цвет статус-бара: ${statusBarColorNames[next]}")
+        }
 
         section("ЦВЕТОВАЯ СХЕМА")
         settingButton("Цветовая схема: ${paletteName(prefs.getInt("channel_palette", 0))}  ›") {
