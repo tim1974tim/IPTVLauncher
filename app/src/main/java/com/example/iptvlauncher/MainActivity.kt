@@ -562,7 +562,9 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        categoryColumn.addView(statusText(category, 28f * statusSizeScale()))
+        categoryColumn.addView(statusText(category, 28f * statusSizeScale()).apply {
+            setTextColor(currentPalette()[1])
+        })
         categoryColumn.addView(statusText("Канал ${position + 1} из ${inGroup.size}", 24f * statusSizeScale()).apply {
             setTextColor(0xFFB8C0CC.toInt())
         })
@@ -593,7 +595,10 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        details.addView(statusText(channel.name, 36f * statusSizeScale()).apply { maxLines = 1 })
+        details.addView(statusText(channel.name, 36f * statusSizeScale()).apply {
+            maxLines = 1
+            setTextColor(currentPalette()[0])
+        })
         val programme = findCurrentAndNext(channel)?.first
         val programmeText = when {
             isChannelBuffering -> "Загрузка канала…"
@@ -1007,7 +1012,7 @@ class MainActivity : AppCompatActivity() {
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                     backgroundTintList = null
                     background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(currentPalette()[0])
+                        setColor(uiPanelColor(currentPalette()[0]))
                         setCornerRadius(dp(9).toFloat())
                         setStroke(dp(3), currentPalette()[1])
                     }
@@ -1015,7 +1020,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     setTextColor(0xFFE0E7F0.toInt())
                     setTypeface(typeface, android.graphics.Typeface.NORMAL)
-                    setBackgroundTintList(android.content.res.ColorStateList.valueOf(currentPalette()[2]))
+                    setBackgroundTintList(android.content.res.ColorStateList.valueOf(uiPanelColor(currentPalette()[2])))
                     elevation = 0f
                 }
             }
@@ -1217,21 +1222,30 @@ class MainActivity : AppCompatActivity() {
     private fun statusAtTop() = prefs.getBoolean("status_top", false)
     private fun statusSizeScale() = when (prefs.getString("status_size", "large")) { "medium" -> 0.8f; "small" -> 0.5f; else -> 1f }
     private fun statusAlpha() = prefs.getInt("status_alpha", 85).coerceIn(20, 100)
-    private fun statusBackgroundColor(): Int { val a = (statusAlpha() * 255 / 100) shl 24; return a or 0x00000000 }
+    private fun statusBackgroundColor(): Int {
+        // Фон всплывающего меню канала (playbackBar), а не системного status bar.
+        val uiFactor = 1f - prefs.getInt("ui_transparency", 0).coerceIn(0, 90) / 100f
+        val alpha = (statusAlpha() * uiFactor * 255f / 100f).toInt().coerceIn(0, 255)
+        return (alpha shl 24) or 0x00101722
+    }
     private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
-    private fun applyInterfaceOpacity() {
+    private fun uiPanelColor(color: Int): Int {
         val factor = 1f - prefs.getInt("ui_transparency", 0).coerceIn(0, 90) / 100f
-        fun withOpacity(color: Int): Int {
-            val alpha = (android.graphics.Color.alpha(color) * factor).toInt().coerceIn(0, 255)
-            return (color and 0x00FFFFFF) or (alpha shl 24)
-        }
-        // Меняем прозрачность только фоновых панелей списка каналов.
-        // Не меняем alpha всего контейнера: текст и статус-бар остаются прежними.
+        val alpha = (android.graphics.Color.alpha(color) * factor).toInt().coerceIn(0, 255)
+        return (color and 0x00FFFFFF) or (alpha shl 24)
+    }
+
+    private fun applyInterfaceOpacity() {
+        // Эти параметры относятся к экранному меню каналов, открываемому BACK,
+        // и не должны менять системный статус-бар или окно воспроизведения.
         if (::browser.isInitialized) {
-            browser.background = android.graphics.drawable.ColorDrawable(withOpacity(0xF00B0E14.toInt()))
+            browser.background = android.graphics.drawable.ColorDrawable(uiPanelColor(0xF00B0E14.toInt()))
+        }
+        if (::channelList.isInitialized) {
+            channelList.setBackgroundColor(uiPanelColor(currentPalette()[2]))
         }
         if (::programmeDetails.isInitialized) {
-            programmeDetails.setBackgroundColor(withOpacity(0xFF111925.toInt()))
+            programmeDetails.setBackgroundColor(uiPanelColor(0xFF111925.toInt()))
         }
         if (browserVisible) {
             if (::channelList.isInitialized) refreshChannels()
@@ -1605,7 +1619,7 @@ class MainActivity : AppCompatActivity() {
                         refreshChannels()
                         refreshProgrammeDetails()
                     }
-                    if (::playbackBar.isInitialized && channels.isNotEmpty()) updatePlaybackBar()
+                    if (browserVisible) applyInterfaceOpacity()
                 }
                 update(progress)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -1780,30 +1794,80 @@ class MainActivity : AppCompatActivity() {
     private fun showFavoritesSettings() {
         val source = allPlaylistChannels.ifEmpty { channels.toList() }
         if (source.isEmpty()) { toast("Сначала загрузите плейлист"); return }
-        val selected = favoriteUrls()
+
+        // В избранном показываем только каналы из категорий, включённых в настройках категорий.
+        val hiddenGroups = prefs.getStringSet(
+            "hidden_groups_${activePlaylistSlot}",
+            if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()
+        ) ?: emptySet()
+        val visibleSource = source.filter { it.group !in hiddenGroups }
+        if (visibleSource.isEmpty()) { toast("Нет каналов в отображаемых категориях"); return }
+
+        val originallySelected = favoriteUrls()
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        source.forEach { channel ->
+        visibleSource.forEach { channel ->
             list.addView(CheckBox(this).apply {
                 text = channel.name; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
                 buttonTintList = android.content.res.ColorStateList.valueOf(currentPalette()[1])
-                isChecked = channel.url in selected; isFocusable = true; isFocusableInTouchMode = true
+                isChecked = channel.url in originallySelected; isFocusable = true; isFocusableInTouchMode = true
                 tag = channel.url; minHeight = dp(46)
             })
         }
         val scroll = ScrollView(this).apply { addView(list) }
-        val dialog = android.app.AlertDialog.Builder(this).setTitle("Избранные каналы — плейлист $activePlaylistSlot")
-            .setView(scroll).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create()
-        dialog.setOnShowListener {
-            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val favorites = mutableSetOf<String>()
-                for (i in 0 until list.childCount) { val cb = list.getChildAt(i) as CheckBox; if (cb.isChecked) favorites.add(cb.tag as String) }
-                prefs.edit().putStringSet(favoriteKey(), favorites).apply()
-                dialog.dismiss()
-                val filtered = visiblePlaylistChannels(source)
-                if (filtered.isNotEmpty()) applyPlaylist(filtered, selectedChannel, reloadEpg = false)
-                else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) toast("Избранное пусто — отключите фильтр избранного")
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Избранные каналы — плейлист $activePlaylistSlot")
+            .setView(scroll)
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Сохранить", null)
+            .create()
+
+        fun collectFavorites(): MutableSet<String> {
+            // Избранное скрытых категорий не трогаем: эти каналы сейчас не показаны в списке.
+            val visibleUrls = visibleSource.map { it.url }.toSet()
+            val result = originallySelected.filter { it !in visibleUrls }.toMutableSet()
+            for (i in 0 until list.childCount) {
+                val cb = list.getChildAt(i) as CheckBox
+                if (cb.isChecked) result.add(cb.tag as String)
+            }
+            return result
+        }
+
+        fun saveFavorites() {
+            val favorites = collectFavorites()
+            prefs.edit().putStringSet(favoriteKey(), favorites).apply()
+            dialog.dismiss()
+            val filtered = visiblePlaylistChannels(source)
+            if (filtered.isNotEmpty()) applyPlaylist(filtered, selectedChannel, reloadEpg = false)
+            else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) {
+                toast("Избранное пусто — отключите фильтр избранного")
             }
         }
+
+        fun hasChanges(): Boolean = collectFavorites() != originallySelected
+
+        fun askSaveBeforeExit() {
+            if (!hasChanges()) { dialog.dismiss(); return }
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Сохранить изменения?")
+                .setMessage("Вы изменили список избранных каналов. Сохранить изменения перед выходом?")
+                .setPositiveButton("Сохранить") { _, _ -> saveFavorites() }
+                .setNegativeButton("Не сохранять") { _, _ -> dialog.dismiss() }
+                .setNeutralButton("Вернуться") { d, _ -> d.dismiss() }
+                .show()
+        }
+
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener { saveFavorites() }
+            dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setOnClickListener { askSaveBeforeExit() }
+        }
+        // BACK в окне избранного предлагает сохранить изменения, а не закрывает его молча.
+        dialog.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                askSaveBeforeExit()
+                true
+            } else false
+        }
+        dialog.setCanceledOnTouchOutside(false)
         dialog.show()
     }
 
