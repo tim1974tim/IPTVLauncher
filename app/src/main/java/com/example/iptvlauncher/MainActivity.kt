@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
     private var okLongPressTriggered = false
     private val longOkRunnable = Runnable { if (!browserVisible && channels.isNotEmpty()) { okLongPressTriggered = true; showAppearanceSettings() } }
     private val statusBarColors = listOf(
-        0xFF101010.toInt(), // Чёрный
+        0xFF000000.toInt(), // Чёрный — исходный цвет #000000
         0xFF30343B.toInt(), // Тёмно-серый
         0xFF123B66.toInt(), // Синий
         0xFF174B36.toInt(), // Зелёный
