@@ -18,8 +18,8 @@ android {
         applicationId = "com.example.iptvlauncher"
         minSdk = 23
         targetSdk = 30
-        versionCode = 10
-        versionName = "0.4.7"
+        versionCode = 11
+        versionName = "0.4.8"
     }
 }
 dependencies {
