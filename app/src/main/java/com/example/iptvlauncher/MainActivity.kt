@@ -99,6 +99,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         // После возврата из свернутого состояния заново поднимаем эфир.
         if (::player.isInitialized && channels.isNotEmpty() && !browserVisible) {
+            applyInterfaceOpacity()
             if (homeReturnPending) {
                 homeReturnPending = false
                 playChannel(resolveLastChannelIndex(channels, selectedChannel))
@@ -106,7 +107,9 @@ class MainActivity : AppCompatActivity() {
             // Некоторые IPTV-потоки после возврата Activity остаются в READY/IDLE,
             // но фактически не выводят видео. Проверяем состояние после восстановления окна.
             statusHandler.removeCallbacks(resumePlaybackRecovery)
-            statusHandler.postDelayed(resumePlaybackRecovery, 2_500L)
+            statusHandler.postDelayed(resumePlaybackRecovery, 3_000L)
+            statusHandler.postDelayed(resumePlaybackRecovery, 7_000L)
+            statusHandler.postDelayed(resumePlaybackRecovery, 12_000L)
         }
     }
 
@@ -118,7 +121,22 @@ class MainActivity : AppCompatActivity() {
                 state == androidx.media3.common.Player.STATE_ENDED ||
                 (state == androidx.media3.common.Player.STATE_READY && player.playWhenReady && !player.isPlaying)
             if (stalled) {
-                playChannel(resolveLastChannelIndex(channels, selectedChannel))
+                val last = resolveLastChannelIndex(channels, selectedChannel)
+                // Reattach/reprepare the stream after HDMI/display sleep; some vendor
+                // decoders report READY while the video surface has stopped rendering.
+                runCatching {
+                    player.playWhenReady = false
+                    player.seekTo(player.currentPosition.coerceAtLeast(0L))
+                    player.prepare()
+                    player.playWhenReady = true
+                }
+                statusHandler.postDelayed({
+                    if (!isFinishing && !isDestroyed && !browserVisible &&
+                        ::player.isInitialized && !player.isPlaying &&
+                        player.playbackState != androidx.media3.common.Player.STATE_BUFFERING) {
+                        playChannel(last)
+                    }
+                }, 2_000L)
             }
         }
     }
@@ -641,7 +659,7 @@ class MainActivity : AppCompatActivity() {
             val cacheFile = java.io.File(filesDir, "epg_cache.xmltv")
             val cachedUrl = prefs.getString("epg_cached_url", null)
             val cacheExists = cacheFile.exists() && cacheFile.length() > 0L && cachedUrl == url
-            val intervalHours = prefs.getInt("playlist_interval_hours", 24).coerceIn(12, 48)
+            val intervalHours = epgIntervalHours(activePlaylistSlot)
             val lastUpdate = prefs.getLong("epg_updated_at", 0L)
             val intervalMs = intervalHours * 60L * 60L * 1000L
             val isFresh = cacheExists && lastUpdate > 0L &&
@@ -1200,15 +1218,24 @@ class MainActivity : AppCompatActivity() {
     private fun statusAlpha() = prefs.getInt("status_alpha", 85).coerceIn(20, 100)
     private fun statusBackgroundColor(): Int { val a = (statusAlpha() * 255 / 100) shl 24; return a or 0x00000000 }
     private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
+    private fun applyInterfaceOpacity() {
+        if (::browser.isInitialized) {
+            val transparency = prefs.getInt("ui_transparency", 0).coerceIn(0, 90)
+            browser.alpha = 1f - transparency / 100f
+        }
+    }
+
+    private fun epgIntervalHours(slot: Int) =
+        prefs.getInt("playlist_${slot}_epg_interval_hours", 24).coerceIn(6, 72)
     private fun currentPalette(): IntArray {
         val base = palettes[prefs.getInt("channel_palette", 0).coerceIn(0, palettes.lastIndex)]
         val saturation = prefs.getInt("ui_saturation", 100).coerceIn(0, 200) / 100f
-        val vividness = prefs.getInt("ui_colorfulness", 100).coerceIn(0, 200) / 100f
+        val hueShift = prefs.getInt("ui_colorfulness", 0).coerceIn(0, 360).toFloat()
         return base.map { color ->
             val hsv = FloatArray(3)
             android.graphics.Color.colorToHSV(color, hsv)
-            hsv[1] = (hsv[1] * saturation * vividness).coerceIn(0f, 1f)
-            hsv[2] = (hsv[2] * (0.85f + vividness * 0.15f)).coerceIn(0f, 1f)
+            hsv[0] = (hsv[0] + hueShift) % 360f
+            hsv[1] = (hsv[1] * saturation).coerceIn(0f, 1f)
             android.graphics.Color.HSVToColor(android.graphics.Color.alpha(color), hsv)
         }.toIntArray()
     }
@@ -1519,33 +1546,67 @@ class MainActivity : AppCompatActivity() {
             })
         })
 
-        section("НАСЫЩЕННОСТЬ ИНТЕРФЕЙСА")
-        fun addThemeSlider(title: String, key: String) {
+        section("ПРОЗРАЧНОСТЬ ИНТЕРФЕЙСА")
+        val transparencyLabel = TextView(this).apply {
+            textSize = 13f
+            setTextColor(0xFFE5EAF2.toInt())
+        }
+        settings.addView(transparencyLabel)
+        settings.addView(SeekBar(this).apply {
+            max = 90
+            progress = prefs.getInt("ui_transparency", 0).coerceIn(0, 90)
+            isFocusable = true; isFocusableInTouchMode = true
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
+            fun update(value: Int) {
+                prefs.edit().putInt("ui_transparency", value).apply()
+                transparencyLabel.text = "Прозрачность интерфейса: $value%"
+                applyInterfaceOpacity()
+                refreshPreview()
+            }
+            update(progress)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) update(progress)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        })
+
+        section("ЦВЕТНОСТЬ ПАЛИТРЫ")
+        fun addColorSlider(title: String, key: String, maxValue: Int, initial: Int) {
             val valueLabel = TextView(this).apply { textSize = 13f; setTextColor(0xFFE5EAF2.toInt()) }
             settings.addView(valueLabel)
             settings.addView(SeekBar(this).apply {
-                max = 200
-                progress = prefs.getInt(key, 100).coerceIn(0, 200)
+                max = maxValue
+                progress = prefs.getInt(key, initial).coerceIn(0, maxValue)
                 isFocusable = true; isFocusableInTouchMode = true
                 progressTintList = android.content.res.ColorStateList.valueOf(accent)
                 thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
-                fun update(v: Int) {
-                    valueLabel.text = "$title: $v%"
-                    prefs.edit().putInt(key, v).apply()
+                fun update(value: Int) {
+                    valueLabel.text = if (key == "ui_colorfulness") "$title: $value°" else "$title: $value%"
+                    prefs.edit().putInt(key, value).apply()
+                    val colors = currentPalette()
+                    valueLabel.setTextColor(colors[1])
                     refreshPreview()
+                    applyStatusAppearance()
                     if (browserVisible) refreshChannels()
+                    if (::playbackBar.isInitialized && channels.isNotEmpty()) updatePlaybackBar()
                 }
                 update(progress)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { if (fromUser) update(progress) }
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                        if (fromUser) update(progress)
+                    }
                     override fun onStartTrackingTouch(seekBar: SeekBar?) {}
                     override fun onStopTrackingTouch(seekBar: SeekBar?) {}
                 })
             })
         }
-        addThemeSlider("Насыщенность", "ui_saturation")
-        section("ЦВЕТНОСТЬ ИНТЕРФЕЙСА")
-        addThemeSlider("Цветность", "ui_colorfulness")
+        addColorSlider("Оттенок палитры", "ui_colorfulness", 360, 0)
+        section("НАСЫЩЕННОСТЬ ЦВЕТА")
+        addColorSlider("Насыщенность", "ui_saturation", 200, 100)
 
         section("ПОВЕДЕНИЕ КНОПКИ НАЗАД")
         val backOption = CheckBox(this).apply {
@@ -1581,6 +1642,24 @@ class MainActivity : AppCompatActivity() {
         }
         settingButton("Настройка плейлиста 1") { showPlaylistSourceEditor(1) }
         settingButton("Настройка плейлиста 2") { showPlaylistSourceEditor(2) }
+        fun addEpgIntervalSetting(slot: Int) {
+            val values = intArrayOf(6, 12, 24, 48, 72)
+            val labels = arrayOf("Каждые 6 часов", "Каждые 12 часов", "Каждые 24 часа", "Каждые 48 часов", "Каждые 72 часа")
+            settingButton("Интервал обновления EPG · плейлист $slot: ${epgIntervalHours(slot)} ч") {
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Обновление EPG · плейлист $slot")
+                    .setSingleChoiceItems(labels, values.indexOf(epgIntervalHours(slot)).coerceAtLeast(0)) { d, which ->
+                        prefs.edit().putInt("playlist_${slot}_epg_interval_hours", values[which]).apply()
+                        d.dismiss()
+                        dialog.dismiss()
+                        showAppearanceSettings()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            }
+        }
+        addEpgIntervalSetting(1)
+        addEpgIntervalSetting(2)
         val onlyFav = CheckBox(this).apply {
             text = "Только избранные каналы"
             textSize = 14f; setTextColor(0xFFE5EAF2.toInt())
@@ -1602,22 +1681,6 @@ class MainActivity : AppCompatActivity() {
         settings.addView(onlyFav)
 
         section("ДОПОЛНИТЕЛЬНО")
-        settingButton("Адреса плейлиста и EPG") {
-            val url = EditText(this).apply { hint = "Адрес M3U"; setSingleLine(true); setText(prefs.getString("playlist_url", "") ?: "") }
-            val epg = EditText(this).apply { hint = "Адрес EPG"; setSingleLine(true); setText(prefs.getString("epg_url", "") ?: "") }
-            val fields = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(16), dp(8), dp(16), dp(8))
-                addView(url); addView(epg)
-            }
-            android.app.AlertDialog.Builder(this).setTitle("Адреса источников").setView(fields)
-                .setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ ->
-                    val newUrl = url.text.toString().trim()
-                    prefs.edit().putString("playlist_url", newUrl).putString("epg_url", epg.text.toString().trim()).apply()
-                    if (newUrl.startsWith("http://") || newUrl.startsWith("https://")) fetchPlaylist(newUrl, selectedChannel, true)
-                    else toast("Адреса сохранены.")
-                }.show()
-        }
         settingButton("Обновить EPG вручную") {
             loadEpgIfConfigured(force = true)
             toast("Запущено ручное обновление EPG")
