@@ -1,3 +1,4 @@
+
 name: Build IPTV Launcher APK
 
 on:
@@ -12,7 +13,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Verify launcher icon sources
+      - name: Verify launcher icon sources and version
         run: |
           set -euxo pipefail
           test -s app/src/main/res/mipmap-mdpi/ic_launcher.png
@@ -38,11 +39,11 @@ jobs:
         run: gradle --no-daemon clean :app:assembleDebug
 
       - name: Name APK with version
-        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.2.0-icon-refresh.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.3.4.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTVLauncher-v0.2.0-icon-refresh
-          path: IPTVLauncher-v0.2.0-icon-refresh.apk
+          name: IPTVLauncher-v0.3.4
+          path: IPTVLauncher-v0.3.4.apk
           if-no-files-found: error
