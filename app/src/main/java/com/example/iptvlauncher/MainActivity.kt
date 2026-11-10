@@ -979,6 +979,7 @@ class MainActivity : AppCompatActivity() {
         }
         browser.addView(programmeScroll, LinearLayout.LayoutParams(0, -1, 0.76f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
+        applyInterfaceOpacity()
         refreshChannels()
         refreshProgrammeDetails()
     }
@@ -1219,9 +1220,22 @@ class MainActivity : AppCompatActivity() {
     private fun statusBackgroundColor(): Int { val a = (statusAlpha() * 255 / 100) shl 24; return a or 0x00000000 }
     private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
     private fun applyInterfaceOpacity() {
+        val factor = 1f - prefs.getInt("ui_transparency", 0).coerceIn(0, 90) / 100f
+        fun withOpacity(color: Int): Int {
+            val alpha = (android.graphics.Color.alpha(color) * factor).toInt().coerceIn(0, 255)
+            return (color and 0x00FFFFFF) or (alpha shl 24)
+        }
+        // Меняем прозрачность только фоновых панелей списка каналов.
+        // Не меняем alpha всего контейнера: текст и статус-бар остаются прежними.
         if (::browser.isInitialized) {
-            val transparency = prefs.getInt("ui_transparency", 0).coerceIn(0, 90)
-            browser.alpha = 1f - transparency / 100f
+            browser.background = android.graphics.drawable.ColorDrawable(withOpacity(0xF00B0E14.toInt()))
+        }
+        if (::programmeDetails.isInitialized) {
+            programmeDetails.setBackgroundColor(withOpacity(0xFF111925.toInt()))
+        }
+        if (browserVisible) {
+            if (::channelList.isInitialized) refreshChannels()
+            if (::programmeDetails.isInitialized) refreshProgrammeDetails()
         }
     }
 
@@ -1425,13 +1439,9 @@ class MainActivity : AppCompatActivity() {
                 orientation = android.graphics.drawable.GradientDrawable.Orientation.TL_BR
                 cornerRadius = dp(14).toFloat()
             }
-            previewCaption.text = "Палитра ${prefs.getInt("channel_palette", 0) + 1}  ·  ${statusAlpha()}%  ·  " +
-                (if (statusAtTop()) "сверху" else "снизу") + "  ·  " +
-                when (prefs.getString("status_size", "large")) {
-                    "medium" -> "80%"
-                    "small" -> "50%"
-                    else -> "100%"
-                }
+            previewCaption.text = "Палитра ${prefs.getInt("channel_palette", 0) + 1}  ·  " +
+                "Насыщенность ${prefs.getInt("ui_saturation", 100)}%  ·  " +
+                "Прозрачность ${prefs.getInt("ui_transparency", 0)}%"
             // Цветовая схема видна сразу: фон сцены, статус-бар и акцентная рамка.
             previewStatus.background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(translucent)
@@ -1590,8 +1600,11 @@ class MainActivity : AppCompatActivity() {
                     val colors = currentPalette()
                     valueLabel.setTextColor(colors[1])
                     refreshPreview()
-                    applyStatusAppearance()
-                    if (browserVisible) refreshChannels()
+                    // Палитра относится к интерфейсу каналов, статус-бар не трогаем.
+                    if (browserVisible) {
+                        refreshChannels()
+                        refreshProgrammeDetails()
+                    }
                     if (::playbackBar.isInitialized && channels.isNotEmpty()) updatePlaybackBar()
                 }
                 update(progress)
