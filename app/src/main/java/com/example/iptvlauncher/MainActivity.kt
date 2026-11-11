@@ -73,24 +73,32 @@ class MainActivity : AppCompatActivity() {
     private var epgLoading = false
     @Volatile private var epgRequestInProgress = false
     private var isChannelBuffering = false
-    // Время последнего реально обработанного видеокадра (не просто сетевой активности).
-    @Volatile private var lastVideoFrameAtMs = 0L
+    // Контроль реального продвижения позиции воспроизведения, а не редких callback обработки кадров.
+    private var lastObservedPositionMs = -1L
+    private var lastPositionChangeAtMs = 0L
     private var lastAutoRecoveryAtMs = 0L
     private var autoRecoveryCount = 0
     private val videoFreezeWatchdog = object : Runnable {
         override fun run() {
             if (isFinishing || isDestroyed || browserVisible || channels.isEmpty() || !::player.isInitialized) return
             val now = SystemClock.elapsedRealtime()
+            val activelyPlaying = player.isPlaying && player.playbackState == androidx.media3.common.Player.STATE_READY
             val hasVideo = player.videoFormat != null
-            val playing = player.playWhenReady && player.playbackState == androidx.media3.common.Player.STATE_READY
-            val lastFrame = lastVideoFrameAtMs
-            if (hasVideo && playing && lastFrame > 0L && now - lastFrame >= 10_000L && now - lastAutoRecoveryAtMs >= 15_000L) {
-                lastAutoRecoveryAtMs = now
-                autoRecoveryCount++
-                val channelToRestore = selectedChannel
-                // Пересоздаём воспроизведение текущего канала так же, как при ручном переключении.
-                playChannel(channelToRestore)
-                if (autoRecoveryCount == 1) toast("Восстанавливаю зависшую трансляцию")
+            if (!activelyPlaying || !hasVideo) {
+                lastObservedPositionMs = -1L
+                lastPositionChangeAtMs = 0L
+            } else {
+                val position = player.currentPosition
+                if (lastObservedPositionMs < 0L || position != lastObservedPositionMs) {
+                    lastObservedPositionMs = position
+                    lastPositionChangeAtMs = now
+                } else if (lastPositionChangeAtMs > 0L && now - lastPositionChangeAtMs >= 20_000L && now - lastAutoRecoveryAtMs >= 30_000L) {
+                    lastAutoRecoveryAtMs = now
+                    autoRecoveryCount++
+                    val channelToRestore = selectedChannel
+                    playChannel(channelToRestore)
+                    if (autoRecoveryCount == 1) toast("Восстанавливаю зависшую трансляцию")
+                }
             }
             statusHandler.postDelayed(this, 3_000L)
         }
@@ -187,20 +195,7 @@ class MainActivity : AppCompatActivity() {
         player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(streamDataSourceFactory))
             .build()
-        player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
-            override fun onVideoFrameProcessingOffset(
-                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
-                totalVideoFrameProcessingOffsetUs: Long,
-                videoFrameProcessingOffsetCount: Int
-            ) {
-                lastVideoFrameAtMs = SystemClock.elapsedRealtime()
-            }
-        })
         player.addListener(object : androidx.media3.common.Player.Listener {
-            override fun onRenderedFirstFrame() {
-                lastVideoFrameAtMs = SystemClock.elapsedRealtime()
-            }
-
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isChannelBuffering = playbackState == androidx.media3.common.Player.STATE_BUFFERING
                 if (::playbackBar.isInitialized && channels.isNotEmpty() && !browserVisible) {
@@ -209,9 +204,6 @@ class MainActivity : AppCompatActivity() {
                         statusHandler.removeCallbacks(hideStatusRunnable)
                         playbackBar.visibility = View.VISIBLE
                     } else if (playbackState == androidx.media3.common.Player.STATE_READY) {
-                        if (player.videoFormat != null && lastVideoFrameAtMs == 0L) {
-                            lastVideoFrameAtMs = SystemClock.elapsedRealtime()
-                        }
                         playbackBar.visibility = View.VISIBLE
                         statusHandler.removeCallbacks(hideStatusRunnable)
                         statusHandler.postDelayed(hideStatusRunnable, 3_000L)
@@ -621,7 +613,8 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putInt("last_channel", index).apply()
         saveLastChannelIdentity()
         isChannelBuffering = true
-        lastVideoFrameAtMs = 0L
+        lastObservedPositionMs = -1L
+        lastPositionChangeAtMs = 0L
         statusHandler.removeCallbacks(hideStatusRunnable)
         playbackBar.visibility = View.VISIBLE
         player.setMediaItem(MediaItem.fromUri(channels[index].url))
