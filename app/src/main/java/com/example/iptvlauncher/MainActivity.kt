@@ -1889,29 +1889,8 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Отмена", null)
             .setPositiveButton("Сохранить", null).create()
         dialog.setOnShowListener {
-            // Не допускаем переход фокуса с последней категории на кнопки диалога.
-            val positiveButton = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
-            val negativeButton = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE)
-            positiveButton.isFocusable = false
-            positiveButton.isFocusableInTouchMode = false
-            negativeButton.isFocusable = false
-            negativeButton.isFocusableInTouchMode = false
-
-            for (index in 0 until list.childCount) {
-                val categoryCheckBox = list.getChildAt(index) as CheckBox
-                categoryCheckBox.setOnKeyListener { _, keyCode, event ->
-                    if (event.action != android.view.KeyEvent.ACTION_DOWN) {
-                        false
-                    } else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_DOWN &&
-                        index == list.childCount - 1) {
-                        true
-                    } else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP && index == 0) {
-                        true
-                    } else {
-                        false
-                    }
-                }
-            }
+            // Кнопки «Отмена» и «Сохранить» остаются доступны с пульта.
+            // Не блокируем стандартную навигацию D-pad между списком и кнопками.
             if (list.childCount > 0) {
                 list.getChildAt(0).requestFocus()
             }
