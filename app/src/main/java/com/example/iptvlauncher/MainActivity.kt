@@ -108,46 +108,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // После возврата из свернутого состояния заново поднимаем эфир.
+        // После возврата из свернутого состояния восстанавливаем последний канал.
         if (::player.isInitialized && channels.isNotEmpty() && !browserVisible) {
             applyInterfaceOpacity()
             if (homeReturnPending) {
                 homeReturnPending = false
                 playChannel(resolveLastChannelIndex(channels, selectedChannel))
-            }
-            // Некоторые IPTV-потоки после возврата Activity остаются в READY/IDLE,
-            // но фактически не выводят видео. Проверяем состояние после восстановления окна.
-            statusHandler.removeCallbacks(resumePlaybackRecovery)
-            statusHandler.postDelayed(resumePlaybackRecovery, 3_000L)
-            statusHandler.postDelayed(resumePlaybackRecovery, 7_000L)
-            statusHandler.postDelayed(resumePlaybackRecovery, 12_000L)
-        }
-    }
-
-    private val resumePlaybackRecovery = Runnable {
-        if (!isFinishing && !isDestroyed && !browserVisible && channels.isNotEmpty() && ::player.isInitialized) {
-            val state = player.playbackState
-            val stalled = player.playerError != null ||
-                state == androidx.media3.common.Player.STATE_IDLE ||
-                state == androidx.media3.common.Player.STATE_ENDED ||
-                (state == androidx.media3.common.Player.STATE_READY && player.playWhenReady && !player.isPlaying)
-            if (stalled) {
-                val last = resolveLastChannelIndex(channels, selectedChannel)
-                // Reattach/reprepare the stream after HDMI/display sleep; some vendor
-                // decoders report READY while the video surface has stopped rendering.
-                runCatching {
-                    player.playWhenReady = false
-                    player.seekTo(player.currentPosition.coerceAtLeast(0L))
-                    player.prepare()
-                    player.playWhenReady = true
-                }
-                statusHandler.postDelayed({
-                    if (!isFinishing && !isDestroyed && !browserVisible &&
-                        ::player.isInitialized && !player.isPlaying &&
-                        player.playbackState != androidx.media3.common.Player.STATE_BUFFERING) {
-                        playChannel(last)
-                    }
-                }, 2_000L)
             }
         }
     }
@@ -2053,7 +2019,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         statusHandler.removeCallbacks(hideStatusRunnable)
-        statusHandler.removeCallbacks(resumePlaybackRecovery)
         statusHandler.removeCallbacks(longOkRunnable)
         if (::player.isInitialized) player.release()
         super.onDestroy()
