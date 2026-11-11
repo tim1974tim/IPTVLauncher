@@ -4,7 +4,6 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.graphics.BitmapFactory
 import android.widget.ImageView
 import android.view.Gravity
@@ -73,8 +72,6 @@ class MainActivity : AppCompatActivity() {
     private var epgLoading = false
     @Volatile private var epgRequestInProgress = false
     private var isChannelBuffering = false
-    // Автоматическое обнаружение зависания временно отключено:
-    // предыдущая эвристика вызывала ложные перезапуски каналов.
     private var epgProgress = 0
     private var epgProgressText = ""
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
@@ -1876,12 +1873,18 @@ class MainActivity : AppCompatActivity() {
         panel.addView(label("Все категории плейлиста", 20f))
         val scroll = ScrollView(this)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        groupsToShow.forEach { group ->
+        groupsToShow.forEachIndexed { index, group ->
             val cb = CheckBox(this).apply {
                 text = group; textSize = 18f; setTextColor(0xFFFFFFFF.toInt())
                 buttonTintList = android.content.res.ColorStateList.valueOf(0xFF39D7FF.toInt())
                 isChecked = group !in hidden; isFocusable = true; isFocusableInTouchMode = true
                 minHeight = dp(48); tag = group
+                // Не позволяем фокусу уходить ниже последней категории и прокручивать пустую область.
+                if (index == groupsToShow.lastIndex) {
+                    setOnKeyListener { _, keyCode, event ->
+                        keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                    }
+                }
             }
             list.addView(cb)
         }
