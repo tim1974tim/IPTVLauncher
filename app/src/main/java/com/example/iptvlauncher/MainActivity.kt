@@ -1867,22 +1867,32 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCategorySettings(source: List<TvChannel>) {
         val allGroups = source.map { it.group }.distinct()
-        val hidden = (prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()).toMutableSet()
-        // Используем ту же полноэкранную компоновку и ScrollView, что и при первом запуске.
-        // Именно эта схема корректно прокручивает категории при навигации с пульта.
+        val hidden = (prefs.getStringSet(
+            "hidden_groups_${activePlaylistSlot}",
+            if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()
+        ) ?: emptySet()).toMutableSet()
         val groupsToShow = (allGroups + hidden).distinct()
+        if (groupsToShow.isEmpty()) {
+            toast("В плейлисте нет категорий")
+            return
+        }
+
+        // Отдельное стандартное диалоговое окно поверх меню OK.
+        // Категории прокручиваются в ScrollView, кнопки остаются внизу окна.
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(20), dp(24), dp(20))
+            setPadding(dp(20), dp(12), dp(20), dp(12))
             setBackgroundColor(0xFF10141D.toInt())
         }
-        panel.addView(label("Выбор категорий", 26f))
         panel.addView(label("Выберите категории, которые нужно показывать", 17f))
+
         val categoryScroll = ScrollView(this).apply {
             isFillViewport = true
             descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            isFocusable = false
         }
         val categoryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val checks = linkedMapOf<String, CheckBox>()
         groupsToShow.forEach { group ->
             val check = CheckBox(this).apply {
                 text = group
@@ -1893,31 +1903,27 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(5), dp(8), dp(5))
                 isFocusable = true
                 isFocusableInTouchMode = true
+                id = View.generateViewId()
                 minHeight = dp(52)
-                tag = group
             }
+            checks[group] = check
             categoryBox.addView(check)
         }
         categoryScroll.addView(categoryBox)
-        panel.addView(categoryScroll, LinearLayout.LayoutParams(dp(620), 0, 1f))
+        panel.addView(categoryScroll, LinearLayout.LayoutParams(dp(620), dp(440)))
 
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, 0)
         }
-        // Отдельная обёртка окна категорий: не заменяем optionsWrapper,
-        // потому что в нём находится основное меню настроек.
-        lateinit var categoryWrapper: FrameLayout
-        val cancel = button("Отмена", focusable = true) {
-            root.removeView(categoryWrapper)
-        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Настройка категорий плейлиста")
+            .setView(panel)
+            .create()
+        val cancel = button("Отмена", focusable = true) { dialog.dismiss() }
         val save = button("Сохранить", focusable = true) {
-            val newHidden = groupsToShow.filter { group ->
-                val cb = (0 until categoryBox.childCount)
-                    .map { categoryBox.getChildAt(it) as CheckBox }
-                    .first { it.tag == group }
-                !cb.isChecked
-            }.toMutableSet()
+            val newHidden = checks.filterValues { !it.isChecked }.keys.toMutableSet()
             val filtered = source.filter { it.group !in newHidden }
             if (filtered.isEmpty()) {
                 toast("Оставьте включённой хотя бы одну категорию")
@@ -1927,27 +1933,20 @@ class MainActivity : AppCompatActivity() {
                 .putStringSet("hidden_groups", newHidden)
                 .putStringSet("hidden_groups_${activePlaylistSlot}", newHidden)
                 .apply()
-            root.removeView(categoryWrapper)
-            // Меняется только фильтр отображения. Ни плейлист, ни EPG не загружаются повторно.
+            dialog.dismiss()
             applyPlaylist(filtered, selectedChannel, reloadEpg = false)
         }
         actions.addView(cancel, LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginEnd = dp(12) })
         actions.addView(save, LinearLayout.LayoutParams(0, dp(54), 1f))
-        panel.addView(actions, LinearLayout.LayoutParams(dp(620), dp(64)))
+        panel.addView(actions, LinearLayout.LayoutParams(dp(620), dp(66)))
 
-        categoryWrapper = FrameLayout(this)
-        categoryWrapper.addView(panel, FrameLayout.LayoutParams(
-            minOf(resources.displayMetrics.widthPixels - dp(48), dp(760)),
-            minOf(resources.displayMetrics.heightPixels - dp(48), dp(680)),
-            Gravity.CENTER
-        ))
-        // Показываем окно поверх настроек, сохраняя само меню под ним.
-        root.addView(categoryWrapper, FrameLayout.LayoutParams(-1, -1))
-        // Стартуем с первой категории, как в меню первичной настройки плейлиста.
-        categoryBox.post {
-            val first = if (categoryBox.childCount > 0) categoryBox.getChildAt(0) else save
-            first.requestFocus()
+        dialog.setOnShowListener {
+            dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+            dialog.window?.setLayout(dp(700), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
+            categoryBox.post { checks.values.firstOrNull()?.requestFocus() ?: cancel.requestFocus() }
         }
+        dialog.show()
+        dialog.window?.setLayout(dp(700), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
     }
 
     @Deprecated("Deprecated in Android")
