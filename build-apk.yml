@@ -21,7 +21,7 @@ jobs:
           test -s app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           test -s app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           sha256sum app/src/main/res/mipmap-*/ic_launcher.png
-          grep -q 'versionCode = 2' app/build.gradle.kts
+          grep -q 'versionCode = 12' app/build.gradle.kts
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -38,11 +38,11 @@ jobs:
         run: gradle --no-daemon clean :app:assembleDebug
 
       - name: Name APK with version
-        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.2.0-icon-refresh.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.4.9.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTVLauncher-v0.2.0-icon-refresh
-          path: IPTVLauncher-v0.2.0-icon-refresh.apk
+          name: IPTVLauncher-v0.4.9
+          path: IPTVLauncher-v0.4.9.apk
           if-no-files-found: error

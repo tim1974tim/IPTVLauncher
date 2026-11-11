@@ -235,8 +235,36 @@ class MainActivity : AppCompatActivity() {
                 } else fetchPlaylist(savedUrl, prefs.getInt("last_channel", -1))
             }
             savedUri != null -> reopenSavedFile(savedUri)
-            else -> showSetup()
+            else -> {
+                if (!prefs.getBoolean("first_launch_banner_shown", false)) {
+                    prefs.edit().putBoolean("first_launch_banner_shown", true).apply()
+                    showFirstLaunchBanner()
+                } else showSetup()
+            }
         }
+    }
+
+    private fun showFirstLaunchBanner() {
+        val banner = FrameLayout(this).apply { setBackgroundColor(0xFF090B10.toInt()) }
+        val title = TextView(this).apply {
+            text = "IPTV Launcher"
+            textSize = 38f
+            setTextColor(0xFFFFFFFF.toInt())
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        banner.addView(title, FrameLayout.LayoutParams(-1, -1))
+        root.addView(banner, FrameLayout.LayoutParams(-1, -1))
+        banner.alpha = 0f
+        banner.animate().alpha(1f).setDuration(250).start()
+        statusHandler.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                banner.animate().alpha(0f).setDuration(200).withEndAction {
+                    root.removeView(banner)
+                    showSetup()
+                }.start()
+            }
+        }, 3_000L)
     }
 
     private fun showSetup() {
@@ -248,6 +276,12 @@ class MainActivity : AppCompatActivity() {
         }
         panel.addView(label("IPTV Launcher", 30f))
         panel.addView(label("Добавьте M3U / M3U8 плейлист", 18f))
+        val homeHint = label("Чтобы открыть главное меню приставки, нажмите и удерживайте кнопку OK на пульте 3 секунды.", 14f).apply {
+            setTextColor(0xFF9EADC2.toInt())
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, dp(14))
+        }
+        panel.addView(homeHint)
         urlInput = EditText(this).apply {
             hint = "https://example.com/playlist.m3u"
             setSingleLine(true)
@@ -1526,14 +1560,6 @@ class MainActivity : AppCompatActivity() {
             }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
         }
 
-        section("ПОЛОЖЕНИЕ СТАТУС-БАРА")
-        settingButton("↑  В верхней части", statusAtTop()) {
-            prefs.edit().putBoolean("status_top", true).apply(); applyStatusAppearance()
-        }
-        settingButton("↓  В нижней части", !statusAtTop()) {
-            prefs.edit().putBoolean("status_top", false).apply(); applyStatusAppearance()
-        }
-
         section("РАЗМЕР СТАТУС-БАРА")
         settingButton("Большой  ·  100%", statusSizeScale() == 1f) {
             prefs.edit().putString("status_size", "large").apply(); applyStatusAppearance()
@@ -1708,7 +1734,12 @@ class MainActivity : AppCompatActivity() {
                     "• Влево / Вправо — категории.\n" +
                     "• OK — включить выбранный канал.\n" +
                     "• BACK — вернуться к просмотру.\n\n" +
-                    "Главный экран приставки: кнопка HOME. При возвращении приложение пытается продолжить последний канал."
+                    "Избранное:\n" +
+                    "• В меню настроек откройте «Настройка избранного».\n" +
+                    "• Вверх / Вниз — выбор канала, OK — поставить или снять галочку.\n" +
+                    "• Изменения сохраняются сразу, BACK — выход. Скрытые категории не показываются.\n\n" +
+                    "Настройки приложения: удерживайте OK 3 секунды во время просмотра.\n" +
+                    "Главное меню приставки: нажмите и удерживайте кнопку OK на пульте 3 секунды. При возвращении приложение пытается продолжить последний канал."
                 )
                 .setPositiveButton("Понятно", null)
                 .show()
@@ -1802,9 +1833,21 @@ class MainActivity : AppCompatActivity() {
             isFocusable = false
             addView(list)
         }
+        val help = TextView(this).apply {
+            text = "КАК ДОБАВИТЬ В ИЗБРАННОЕ\n\nПеремещайтесь по списку кнопками ↑ / ↓.\n\nНажмите OK, чтобы поставить галочку и добавить канал в избранное.\n\nНажмите OK ещё раз, чтобы снять галочку и убрать канал из избранного.\n\nИзменения сохраняются сразу. Нажмите BACK для выхода."
+            textSize = 15f
+            setTextColor(0xFFD5DCE8.toInt())
+            setPadding(dp(20), dp(16), dp(12), dp(16))
+            gravity = Gravity.TOP
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(scroll, LinearLayout.LayoutParams(0, dp(480), 0.58f))
+            addView(help, LinearLayout.LayoutParams(0, dp(480), 0.42f))
+        }
         val dialog = android.app.AlertDialog.Builder(this)
             .setTitle("Избранные каналы — плейлист $activePlaylistSlot")
-            .setView(scroll)
+            .setView(content)
             .create()
 
         dialog.setOnDismissListener {
