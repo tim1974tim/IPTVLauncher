@@ -1910,7 +1910,12 @@ class MainActivity : AppCompatActivity() {
             categoryBox.addView(check)
         }
         categoryScroll.addView(categoryBox)
-        panel.addView(categoryScroll, LinearLayout.LayoutParams(dp(620), dp(440)))
+        // Ограничиваем высоту списка по реальной высоте экрана,
+        // чтобы заголовок и кнопки всегда оставались видимыми.
+        val screenHeightDp = (resources.displayMetrics.heightPixels /
+            resources.displayMetrics.density).toInt()
+        val categoryListHeightDp = (screenHeightDp - 300).coerceIn(180, 440)
+        panel.addView(categoryScroll, LinearLayout.LayoutParams(dp(620), dp(categoryListHeightDp)))
 
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
