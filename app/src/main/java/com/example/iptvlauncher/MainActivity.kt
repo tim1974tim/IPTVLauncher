@@ -1889,13 +1889,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Отмена", null)
             .setPositiveButton("Сохранить", null).create()
         dialog.setOnShowListener {
-            // Кнопки диалога получаем после показа окна, чтобы назначить обработчик.
-            val positiveButton = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
-            if (list.childCount > 0) {
-                list.getChildAt(0).requestFocus()
-            }
-
-            positiveButton.setOnClickListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val newHidden = groupsToShow.filter { group ->
                     val cb = (0 until list.childCount).map { list.getChildAt(it) as CheckBox }.first { it.tag == group }
                     !cb.isChecked
@@ -1909,6 +1903,29 @@ class MainActivity : AppCompatActivity() {
             }
         }
         dialog.show()
+
+        // Явно задаём переход с последней категории на кнопки диалога.
+        // Это не даёт ScrollView уводить фокус в пустую область под списком,
+        // при этом «Отмена» и «Сохранить» остаются доступны с пульта.
+        val cancelButton = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE)
+        val saveButton = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+        val lastCategory = list.getChildAt(list.childCount - 1)
+        if (lastCategory != null) {
+            lastCategory.nextFocusDownId = cancelButton.id
+            lastCategory.setOnKeyListener { _, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
+                    event.action == KeyEvent.ACTION_DOWN) {
+                    cancelButton.requestFocus()
+                    true
+                } else {
+                    false
+                }
+            }
+            cancelButton.nextFocusUpId = lastCategory.id
+            saveButton.nextFocusUpId = lastCategory.id
+        }
+        cancelButton.nextFocusRightId = saveButton.id
+        saveButton.nextFocusLeftId = cancelButton.id
     }
 
     @Deprecated("Deprecated in Android")
