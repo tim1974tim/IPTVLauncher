@@ -1905,9 +1905,11 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
         }
+        // Отдельная обёртка окна категорий: не заменяем optionsWrapper,
+        // потому что в нём находится основное меню настроек.
+        lateinit var categoryWrapper: FrameLayout
         val cancel = button("Отмена", focusable = true) {
-            optionsWrapper?.let { root.removeView(it) }
-            optionsWrapper = null
+            root.removeView(categoryWrapper)
         }
         val save = button("Сохранить", focusable = true) {
             val newHidden = groupsToShow.filter { group ->
@@ -1925,8 +1927,7 @@ class MainActivity : AppCompatActivity() {
                 .putStringSet("hidden_groups", newHidden)
                 .putStringSet("hidden_groups_${activePlaylistSlot}", newHidden)
                 .apply()
-            optionsWrapper?.let { root.removeView(it) }
-            optionsWrapper = null
+            root.removeView(categoryWrapper)
             // Меняется только фильтр отображения. Ни плейлист, ни EPG не загружаются повторно.
             applyPlaylist(filtered, selectedChannel, reloadEpg = false)
         }
@@ -1934,15 +1935,14 @@ class MainActivity : AppCompatActivity() {
         actions.addView(save, LinearLayout.LayoutParams(0, dp(54), 1f))
         panel.addView(actions, LinearLayout.LayoutParams(dp(620), dp(64)))
 
-        val wrapper = FrameLayout(this)
-        wrapper.addView(panel, FrameLayout.LayoutParams(
+        categoryWrapper = FrameLayout(this)
+        categoryWrapper.addView(panel, FrameLayout.LayoutParams(
             minOf(resources.displayMetrics.widthPixels - dp(48), dp(760)),
             minOf(resources.displayMetrics.heightPixels - dp(48), dp(680)),
             Gravity.CENTER
         ))
-        optionsWrapper?.let { root.removeView(it) }
-        optionsWrapper = wrapper
-        root.addView(wrapper, FrameLayout.LayoutParams(-1, -1))
+        // Показываем окно поверх настроек, сохраняя само меню под ним.
+        root.addView(categoryWrapper, FrameLayout.LayoutParams(-1, -1))
         // Стартуем с первой категории, как в меню первичной настройки плейлиста.
         categoryBox.post {
             val first = if (categoryBox.childCount > 0) categoryBox.getChildAt(0) else save
