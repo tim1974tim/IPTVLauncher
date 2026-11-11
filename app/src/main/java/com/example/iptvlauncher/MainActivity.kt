@@ -1873,18 +1873,12 @@ class MainActivity : AppCompatActivity() {
         panel.addView(label("Все категории плейлиста", 20f))
         val scroll = ScrollView(this)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        groupsToShow.forEachIndexed { index, group ->
+        groupsToShow.forEach { group ->
             val cb = CheckBox(this).apply {
                 text = group; textSize = 18f; setTextColor(0xFFFFFFFF.toInt())
                 buttonTintList = android.content.res.ColorStateList.valueOf(0xFF39D7FF.toInt())
                 isChecked = group !in hidden; isFocusable = true; isFocusableInTouchMode = true
                 minHeight = dp(48); tag = group
-                // Не позволяем фокусу уходить ниже последней категории и прокручивать пустую область.
-                if (index == groupsToShow.lastIndex) {
-                    setOnKeyListener { _, keyCode, event ->
-                        keyCode == KeyEvent.KEYCODE_DPAD_DOWN
-                    }
-                }
             }
             list.addView(cb)
         }
@@ -1895,7 +1889,34 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Отмена", null)
             .setPositiveButton("Сохранить", null).create()
         dialog.setOnShowListener {
-            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            // Не допускаем переход фокуса с последней категории на кнопки диалога.
+            val positiveButton = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+            val negativeButton = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE)
+            positiveButton.isFocusable = false
+            positiveButton.isFocusableInTouchMode = false
+            negativeButton.isFocusable = false
+            negativeButton.isFocusableInTouchMode = false
+
+            for (index in 0 until list.childCount) {
+                val categoryCheckBox = list.getChildAt(index) as CheckBox
+                categoryCheckBox.setOnKeyListener { _, keyCode, event ->
+                    if (event.action != android.view.KeyEvent.ACTION_DOWN) {
+                        false
+                    } else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_DOWN &&
+                        index == list.childCount - 1) {
+                        true
+                    } else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP && index == 0) {
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+            if (list.childCount > 0) {
+                list.getChildAt(0).requestFocus()
+            }
+
+            positiveButton.setOnClickListener {
                 val newHidden = groupsToShow.filter { group ->
                     val cb = (0 until list.childCount).map { list.getChildAt(it) as CheckBox }.first { it.tag == group }
                     !cb.isChecked
