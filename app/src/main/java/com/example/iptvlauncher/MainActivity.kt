@@ -1806,63 +1806,108 @@ class MainActivity : AppCompatActivity() {
         val visibleSource = source.filter { it.group !in hiddenGroups }
         if (visibleSource.isEmpty()) { toast("Нет каналов в отображаемых категориях"); return }
 
+        val previousChannel = selectedChannel
+        val dialog = android.app.Dialog(this)
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(0xFF090D15.toInt())
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+        }
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF111925.toInt())
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        left.addView(TextView(this).apply {
+            text = "ИЗБРАННОЕ  •  КАНАЛЫ"
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(8), dp(8), dp(8), dp(14))
+        })
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        visibleSource.forEach { channel ->
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(list)
+        }
+        left.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val preview = FrameLayout(this).apply {
+            setBackgroundColor(0xFF000000.toInt())
+        }
+        val right = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(4), dp(8))
+            addView(TextView(this@MainActivity).apply {
+                text = "ПРЕДПРОСМОТР КАНАЛА"
+                textSize = 20f
+                setTextColor(0xFFFFFFFF.toInt())
+                setPadding(dp(8), dp(8), dp(8), dp(14))
+            })
+            addView(preview, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = "OK — изменить избранное    BACK — возврат"
+                textSize = 14f
+                setTextColor(0xFFB8C4D4.toInt())
+                setPadding(dp(8), dp(12), dp(8), dp(4))
+            })
+        }
+        screen.addView(left, LinearLayout.LayoutParams(0, -1, 0.43f).apply { rightMargin = dp(10) })
+        screen.addView(right, LinearLayout.LayoutParams(0, -1, 0.57f))
+
+        // Переносим тот же PlayerView в правую часть, чтобы эфир продолжал отображаться без второго плеера.
+        (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
+        preview.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+
+        var firstRow: View? = null
+        visibleSource.forEachIndexed { position, channel ->
             val checkBox = CheckBox(this).apply {
                 text = channel.name
-                textSize = 16f
+                textSize = 17f
                 setTextColor(0xFFFFFFFF.toInt())
                 buttonTintList = android.content.res.ColorStateList.valueOf(currentPalette()[1])
                 isChecked = channel.url in favoriteUrls()
                 isFocusable = true
                 isFocusableInTouchMode = true
+                minHeight = dp(48)
+                setPadding(dp(8), dp(2), dp(8), dp(2))
                 id = View.generateViewId()
                 tag = channel.url
-                minHeight = dp(46)
+                setOnFocusChangeListener { _, hasFocus ->
+                    if (hasFocus) {
+                        val index = channels.indexOfFirst { it.url == channel.url }
+                        if (index >= 0 && index != selectedChannel) playChannel(index)
+                    }
+                }
             }
-            // Сохраняем каждое изменение сразу: BACK просто закрывает окно.
             checkBox.setOnCheckedChangeListener { _, checked ->
                 val updated = favoriteUrls()
                 if (checked) updated.add(channel.url) else updated.remove(channel.url)
                 prefs.edit().putStringSet(favoriteKey(), updated).apply()
             }
             list.addView(checkBox)
+            if (position == 0) firstRow = checkBox
         }
 
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            isFocusable = false
-            addView(list)
-        }
-        val help = TextView(this).apply {
-            text = "КАК ДОБАВИТЬ В ИЗБРАННОЕ\n\nПеремещайтесь по списку кнопками ↑ / ↓.\n\nНажмите OK, чтобы поставить галочку и добавить канал в избранное.\n\nНажмите OK ещё раз, чтобы снять галочку и убрать канал из избранного.\n\nИзменения сохраняются сразу. Нажмите BACK для выхода."
-            textSize = 15f
-            setTextColor(0xFFD5DCE8.toInt())
-            setPadding(dp(20), dp(16), dp(12), dp(16))
-            gravity = Gravity.TOP
-        }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(scroll, LinearLayout.LayoutParams(0, dp(480), 0.58f))
-            addView(help, LinearLayout.LayoutParams(0, dp(480), 0.42f))
-        }
-        val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Избранные каналы — плейлист $activePlaylistSlot")
-            .setView(content)
-            .create()
-
+        dialog.setContentView(screen)
+        dialog.setCanceledOnTouchOutside(false)
         dialog.setOnDismissListener {
-            // Обновляем активный список после закрытия, используя уже сохранённое избранное.
+            // Возвращаем PlayerView на основной экран; выбранный для предпросмотра канал остаётся текущим.
+            (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
+            root.addView(playerView, 0, FrameLayout.LayoutParams(-1, -1))
             val filtered = visiblePlaylistChannels(source)
             if (filtered.isNotEmpty()) {
-                applyPlaylist(filtered, selectedChannel.coerceIn(0, filtered.lastIndex), reloadEpg = false)
+                val current = channels.indexOfFirst { it.url == channels.getOrNull(selectedChannel)?.url }
+                applyPlaylist(filtered, current.coerceIn(0, filtered.lastIndex), reloadEpg = false)
             } else if (prefs.getBoolean("only_favorites_${activePlaylistSlot}", false)) {
                 toast("Избранное пусто — отключите фильтр избранного")
             }
+            if (selectedChannel == previousChannel) updatePlaybackBar()
         }
-        dialog.setCanceledOnTouchOutside(false)
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
         dialog.show()
-        list.getChildAt(0)?.requestFocus()
+        dialog.window?.setLayout(-1, -1)
+        firstRow?.requestFocus()
     }
 
     private fun showCategorySettings(source: List<TvChannel>) {
