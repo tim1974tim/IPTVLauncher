@@ -73,36 +73,8 @@ class MainActivity : AppCompatActivity() {
     private var epgLoading = false
     @Volatile private var epgRequestInProgress = false
     private var isChannelBuffering = false
-    // Контроль реального продвижения позиции воспроизведения, а не редких callback обработки кадров.
-    private var lastObservedPositionMs = -1L
-    private var lastPositionChangeAtMs = 0L
-    private var lastAutoRecoveryAtMs = 0L
-    private var autoRecoveryCount = 0
-    private val videoFreezeWatchdog = object : Runnable {
-        override fun run() {
-            if (isFinishing || isDestroyed || browserVisible || channels.isEmpty() || !::player.isInitialized) return
-            val now = SystemClock.elapsedRealtime()
-            val activelyPlaying = player.isPlaying && player.playbackState == androidx.media3.common.Player.STATE_READY
-            val hasVideo = player.videoFormat != null
-            if (!activelyPlaying || !hasVideo) {
-                lastObservedPositionMs = -1L
-                lastPositionChangeAtMs = 0L
-            } else {
-                val position = player.currentPosition
-                if (lastObservedPositionMs < 0L || position != lastObservedPositionMs) {
-                    lastObservedPositionMs = position
-                    lastPositionChangeAtMs = now
-                } else if (lastPositionChangeAtMs > 0L && now - lastPositionChangeAtMs >= 20_000L && now - lastAutoRecoveryAtMs >= 30_000L) {
-                    lastAutoRecoveryAtMs = now
-                    autoRecoveryCount++
-                    val channelToRestore = selectedChannel
-                    playChannel(channelToRestore)
-                    if (autoRecoveryCount == 1) toast("Восстанавливаю зависшую трансляцию")
-                }
-            }
-            statusHandler.postDelayed(this, 3_000L)
-        }
-    }
+    // Автоматическое обнаружение зависания временно отключено:
+    // предыдущая эвристика вызывала ложные перезапуски каналов.
     private var epgProgress = 0
     private var epgProgressText = ""
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
@@ -241,8 +213,6 @@ class MainActivity : AppCompatActivity() {
         })
         applyStatusAppearance()
         setContentView(root)
-        statusHandler.removeCallbacks(videoFreezeWatchdog)
-        statusHandler.postDelayed(videoFreezeWatchdog, 3_000L)
 
         activePlaylistSlot = prefs.getInt("active_playlist_slot", 1).coerceIn(1, 2)
         val savedUrl = prefs.getString("playlist_${activePlaylistSlot}_url", null) ?: prefs.getString("playlist_url", null)
@@ -613,8 +583,6 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putInt("last_channel", index).apply()
         saveLastChannelIdentity()
         isChannelBuffering = true
-        lastObservedPositionMs = -1L
-        lastPositionChangeAtMs = 0L
         statusHandler.removeCallbacks(hideStatusRunnable)
         playbackBar.visibility = View.VISIBLE
         player.setMediaItem(MediaItem.fromUri(channels[index].url))
