@@ -1889,8 +1889,8 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Отмена", null)
             .setPositiveButton("Сохранить", null).create()
         dialog.setOnShowListener {
-            // Кнопки «Отмена» и «Сохранить» остаются доступны с пульта.
-            // Не блокируем стандартную навигацию D-pad между списком и кнопками.
+            // Кнопки диалога получаем после показа окна, чтобы назначить обработчик.
+            val positiveButton = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
             if (list.childCount > 0) {
                 list.getChildAt(0).requestFocus()
             }
