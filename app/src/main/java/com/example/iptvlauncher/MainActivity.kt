@@ -1603,7 +1603,7 @@ class MainActivity : AppCompatActivity() {
     }
     private fun statusGravity() = if (statusAtTop()) Gravity.TOP else Gravity.BOTTOM
     private fun uiPanelColor(color: Int): Int {
-        val factor = 1f - prefs.getInt("ui_transparency", 0).coerceIn(0, 90) / 100f
+        val factor = 1f - prefs.getInt("ui_transparency", 55).coerceIn(0, 80) / 100f
         val alpha = (android.graphics.Color.alpha(color) * factor).toInt().coerceIn(0, 255)
         return (color and 0x00FFFFFF) or (alpha shl 24)
     }
@@ -2005,6 +2005,38 @@ class MainActivity : AppCompatActivity() {
                         alphaValue.text = "Непрозрачность фона: $value%"
                         applyStatusAppearance()
                         refreshPreview()
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        })
+
+        section("ПРОЗРАЧНОСТЬ МЕНЮ КАНАЛОВ  ·  ${prefs.getInt("ui_transparency", 55).coerceIn(0, 80)}%")
+        val menuTransparencyValue = TextView(this).apply {
+            text = "Прозрачность фона меню: ${prefs.getInt("ui_transparency", 55).coerceIn(0, 80)}%"
+            textSize = 13f
+            setTextColor(0xFFE5EAF2.toInt())
+        }
+        settings.addView(menuTransparencyValue)
+        settings.addView(SeekBar(this).apply {
+            max = 80
+            progress = prefs.getInt("ui_transparency", 55).coerceIn(0, 80)
+            isFocusable = true
+            isFocusableInTouchMode = true
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            thumbTintList = android.content.res.ColorStateList.valueOf(0xFFEAF4FF.toInt())
+            setOnFocusChangeListener { v, focused ->
+                v.scaleX = if (focused) 1.05f else 1f
+                v.scaleY = if (focused) 1.18f else 1f
+                v.alpha = if (focused) 1f else 0.78f
+            }
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        prefs.edit().putInt("ui_transparency", progress).apply()
+                        menuTransparencyValue.text = "Прозрачность фона меню: ${progress}%"
+                        applyInterfaceOpacity()
                     }
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {}
