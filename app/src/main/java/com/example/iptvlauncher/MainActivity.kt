@@ -76,6 +76,9 @@ class MainActivity : AppCompatActivity() {
     private var epgLoading = false
     @Volatile private var epgRequestInProgress = false
     private var isChannelBuffering = false
+    private var endedDialogShown = false
+    private var endedRetryCount = 0
+    private var endedRetryChannelIndex = -1
     private var epgProgress = 0
     private var epgProgressText = ""
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
@@ -206,6 +209,15 @@ class MainActivity : AppCompatActivity() {
                     else -> playbackState.toString()
                 }
                 logEvent("Состояние плеера: $stateName; канал: ${channels.getOrNull(selectedChannel)?.name ?: "не выбран"}")
+                if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                    endedRetryCount = 0
+                    endedRetryChannelIndex = selectedChannel
+                }
+                if (playbackState == androidx.media3.common.Player.STATE_ENDED && !endedDialogShown && channels.isNotEmpty()) {
+                    endedDialogShown = true
+                    isChannelBuffering = false
+                    runOnUiThread { handleStreamEnded() }
+                }
                 if (::playbackBar.isInitialized && channels.isNotEmpty() && !browserVisible) {
                     updatePlaybackBar()
                     if (isChannelBuffering) {
@@ -616,6 +628,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun playChannel(index: Int) {
         if (index !in channels.indices) return
+        endedDialogShown = false
+        endedRetryCount = 0
+        endedRetryChannelIndex = index
         logEvent("Запрос воспроизведения канала: ${channels[index].name}")
         selectedChannel = index
         groupIndex = groups.indexOf(channels[index].group).coerceAtLeast(0)
@@ -630,6 +645,36 @@ class MainActivity : AppCompatActivity() {
         closeBrowser()
         updatePlaybackBar()
         showPlaybackBarForThreeSeconds()
+    }
+
+
+    private fun handleStreamEnded() {
+        if (isFinishing || channels.isEmpty()) return
+        val index = selectedChannel
+        val channelName = channels.getOrNull(index)?.name ?: "Текущий канал"
+        if (endedRetryChannelIndex != index) {
+            endedRetryChannelIndex = index
+            endedRetryCount = 0
+        }
+        if (endedRetryCount < 2) {
+            endedRetryCount++
+            val attempt = endedRetryCount
+            logEvent("Поток завершился (ENDED); автоматическая перезагрузка $attempt/2; канал=$channelName")
+            statusHandler.postDelayed({
+                if (!isFinishing && selectedChannel == index && channels.indices.contains(index)) {
+                    logEvent("Автоматический повторный запуск $attempt/2; канал=$channelName")
+                    endedDialogShown = false
+                    player.stop()
+                    player.clearMediaItems()
+                    player.setMediaItem(MediaItem.fromUri(channels[index].url))
+                    player.prepare()
+                    player.playWhenReady = true
+                }
+            }, 1500L)
+        } else {
+            logEvent("Две автоматические попытки исчерпаны; требуется перезагрузить канал вручную; канал=$channelName")
+            Toast.makeText(this, "Перезагрузите канал", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun updatePlaybackBar() {
@@ -1378,9 +1423,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showEngineSettings() {
         val options = arrayOf(
-            "ExoPlayer / Media3 — используется сейчас",
-            "VLC / libVLC — пока не подключён",
-            "mpv / libmpv — пока не подключён"
+            "ExoPlayer / Media3 — подключён",
+            "VLC / libVLC — интеграция не завершена",
+            "mpv / libmpv — интеграция не завершена"
         )
         android.app.AlertDialog.Builder(this)
             .setTitle("Движок воспроизведения")
@@ -1390,8 +1435,8 @@ class MainActivity : AppCompatActivity() {
                     prefs.edit().putString("playback_engine", "exo").apply()
                     toast("Выбран ExoPlayer / Media3")
                 } else {
-                    toast("Этот движок ещё не интегрирован. Сейчас продолжает использоваться ExoPlayer.")
-                    logEvent("Пользователь выбрал недоступный движок в меню: ${if (which == 1) "VLC" else "mpv"}; переключение не выполнено")
+                    toast("Этот движок пока недоступен. Продолжает работать ExoPlayer / Media3.")
+                    logEvent("Выбран недоступный движок: ${if (which == 1) "VLC" else "mpv"}; фактический движок остаётся ExoPlayer / Media3")
                 }
             }
             .setNegativeButton("Закрыть", null)
