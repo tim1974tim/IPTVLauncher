@@ -184,7 +184,7 @@ class MainActivity : AppCompatActivity() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(streamDataSourceFactory))
             .build()
         // Восстанавливаем журнал предыдущего запуска, чтобы его можно было открыть после перезапуска.
-        prefs.getString("diagnostic_log", "")?.lineSequence()?.filter { it.isNotBlank() }?.takeLast(500)?.let {
+        prefs.getString("diagnostic_log", "")?.lineSequence()?.filter { it.isNotBlank() }?.toList()?.takeLast(500)?.let {
             synchronized(diagnosticLog) { diagnosticLog.addAll(it) }
         }
         player.addListener(object : androidx.media3.common.Player.Listener {
