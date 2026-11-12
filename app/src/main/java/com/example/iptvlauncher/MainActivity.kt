@@ -16,6 +16,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.ui.PlayerView
@@ -128,7 +129,14 @@ class MainActivity : AppCompatActivity() {
             .setConnectTimeoutMs(45_000)
             .setReadTimeoutMs(120_000)
             .setAllowCrossProtocolRedirects(true)
+        // Разрешаем Media3 подобрать альтернативный декодер, если основной
+        // аппаратный декодер недоступен или не может быть инициализирован.
+        // Это диагностический шаг; принудительно переводить все каналы
+        // на программное декодирование не нужно.
+        val renderersFactory = DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
         player = ExoPlayer.Builder(this)
+            .setRenderersFactory(renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(streamDataSourceFactory))
             .build()
         player.addListener(object : androidx.media3.common.Player.Listener {
