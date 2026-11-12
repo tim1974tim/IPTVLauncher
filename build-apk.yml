@@ -42,6 +42,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Verify Gradle version
+        run: |
+          gradle --version
+          GRADLE_VERSION=$(gradle --version | awk '/^Gradle / {print $2; exit}')
+          test "$GRADLE_VERSION" = '8.11.1'
 
       - name: Build debug APK
         run: gradle --no-daemon clean :app:assembleDebug
