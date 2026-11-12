@@ -88,6 +88,16 @@ class MainActivity : AppCompatActivity() {
     private var homeReturnPending = false
     private val prefs by lazy { getSharedPreferences("iptv", MODE_PRIVATE) }
     private val decoderNames = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val diagnosticLog = java.util.Collections.synchronizedList(mutableListOf<String>())
+    private fun logEvent(message: String) {
+        val line = "${java.text.SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(java.util.Date())}  $message"
+        synchronized(diagnosticLog) {
+            diagnosticLog.add(line)
+            while (diagnosticLog.size > 500) diagnosticLog.removeAt(0)
+            runCatching { prefs.edit().putString("diagnostic_log", diagnosticLog.joinToString("\n")).apply() }
+        }
+        android.util.Log.i("IPTVLauncher", message)
+    }
 
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -173,9 +183,29 @@ class MainActivity : AppCompatActivity() {
             .setRenderersFactory(renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(streamDataSourceFactory))
             .build()
+        // Восстанавливаем журнал предыдущего запуска, чтобы его можно было открыть после перезапуска.
+        prefs.getString("diagnostic_log", "")?.lineSequence()?.filter { it.isNotBlank() }?.takeLast(500)?.let {
+            synchronized(diagnosticLog) { diagnosticLog.addAll(it) }
+        }
         player.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                logEvent("Размер видео: ${videoSize.width}x${videoSize.height}; pixelRatio=${videoSize.pixelWidthHeightRatio}")
+            }
+
+            override fun onRenderedFirstFrame() {
+                logEvent("Отображён первый видеокадр")
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isChannelBuffering = playbackState == androidx.media3.common.Player.STATE_BUFFERING
+                val stateName = when (playbackState) {
+                    androidx.media3.common.Player.STATE_IDLE -> "IDLE"
+                    androidx.media3.common.Player.STATE_BUFFERING -> "BUFFERING"
+                    androidx.media3.common.Player.STATE_READY -> "READY"
+                    androidx.media3.common.Player.STATE_ENDED -> "ENDED"
+                    else -> playbackState.toString()
+                }
+                logEvent("Состояние плеера: $stateName; канал: ${channels.getOrNull(selectedChannel)?.name ?: "не выбран"}")
                 if (::playbackBar.isInitialized && channels.isNotEmpty() && !browserVisible) {
                     updatePlaybackBar()
                     if (isChannelBuffering) {
@@ -190,6 +220,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                logEvent("ОШИБКА ExoPlayer: ${error.errorCodeName}; ${error.message ?: "без описания"}; cause=${error.cause?.javaClass?.simpleName}: ${error.cause?.message}")
                 isChannelBuffering = false
                 runOnUiThread {
                     toast("Ошибка воспроизведения: ${error.errorCodeName}")
@@ -202,6 +233,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         root = FrameLayout(this).apply { setBackgroundColor(0xFF090B10.toInt()) }
+        logEvent("Запуск приложения; устройство=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}; Android ${android.os.Build.VERSION.RELEASE}; движок=ExoPlayer/Media3; режим декодера=$decoderMode")
         playerView = PlayerView(this).apply {
             player = this@MainActivity.player
             useController = false
@@ -584,6 +616,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun playChannel(index: Int) {
         if (index !in channels.indices) return
+        logEvent("Запрос воспроизведения канала: ${channels[index].name}")
         selectedChannel = index
         groupIndex = groups.indexOf(channels[index].group).coerceAtLeast(0)
         prefs.edit().putInt("last_channel", index).apply()
@@ -1343,6 +1376,61 @@ class MainActivity : AppCompatActivity() {
         if (channels.isNotEmpty()) updatePlaybackBar()
     }
 
+    private fun showEngineSettings() {
+        val options = arrayOf(
+            "ExoPlayer / Media3 — используется сейчас",
+            "VLC / libVLC — пока не подключён",
+            "mpv / libmpv — пока не подключён"
+        )
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Движок воспроизведения")
+            .setSingleChoiceItems(options, 0) { dialog, which ->
+                dialog.dismiss()
+                if (which == 0) {
+                    prefs.edit().putString("playback_engine", "exo").apply()
+                    toast("Выбран ExoPlayer / Media3")
+                } else {
+                    toast("Этот движок ещё не интегрирован. Сейчас продолжает использоваться ExoPlayer.")
+                    logEvent("Пользователь выбрал недоступный движок в меню: ${if (which == 1) "VLC" else "mpv"}; переключение не выполнено")
+                }
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun showDiagnosticLog() {
+        val snapshot = synchronized(diagnosticLog) { diagnosticLog.toList() }
+        val content = if (snapshot.isEmpty()) "Журнал пока пуст. Ошибки и события появятся во время воспроизведения." else snapshot.joinToString("\n")
+        val textView = TextView(this).apply {
+            text = content
+            textSize = 13f
+            setTextColor(0xFFE3E8EF.toInt())
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply {
+            addView(textView)
+            isFillViewport = true
+        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Журнал ошибок и событий (${snapshot.size})")
+            .setView(scroll)
+            .setPositiveButton("Закрыть", null)
+            .setNeutralButton("Копировать") { _, _ ->
+                val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("IPTVLauncher log", content))
+                toast("Журнал скопирован")
+            }
+            .setNegativeButton("Очистить") { _, _ ->
+                synchronized(diagnosticLog) { diagnosticLog.clear() }
+                logEvent("Журнал очищен пользователем")
+                toast("Журнал очищен")
+            }
+            .create()
+        dialog.show()
+        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.82f).toInt(), (resources.displayMetrics.heightPixels * 0.78f).toInt())
+    }
+
     private fun showDecoderSettings() {
         val options = arrayOf(
             "Автоматический — выбор Android (рекомендуется)",
@@ -1769,7 +1857,9 @@ class MainActivity : AppCompatActivity() {
             if (source.isNotEmpty()) showCategorySettings(source)
         }
         settingButton("Настройка избранного") { showFavoritesSettings() }
+        settingButton("Движок воспроизведения") { showEngineSettings() }
         settingButton("Режим видеодекодера") { showDecoderSettings() }
+        settingButton("Журнал ошибок и событий") { showDiagnosticLog() }
         settingButton("Открыть настройки приставки") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
                 .onFailure { toast("Не удалось открыть настройки приставки") }
@@ -2108,6 +2198,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         statusHandler.removeCallbacks(longOkRunnable)
+        logEvent("Завершение приложения")
         if (::player.isInitialized) player.release()
         super.onDestroy()
     }
