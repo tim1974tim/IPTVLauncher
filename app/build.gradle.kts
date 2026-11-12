@@ -29,4 +29,6 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // VideoLAN libVLC: real Android playback engine and native binaries.
+    implementation("org.videolan.android:libvlc-all:3.7.7")
 }

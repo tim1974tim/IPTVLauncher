@@ -29,6 +29,8 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var playerView: PlayerView
+    // Общий контейнер видеовывода: его можно переносить между основным экраном и предпросмотром.
+    private lateinit var videoHost: FrameLayout
     private lateinit var browser: LinearLayout
     private lateinit var channelList: LinearLayout
     private lateinit var channelScroll: ScrollView
@@ -69,6 +71,8 @@ class MainActivity : AppCompatActivity() {
     private var pendingPlaylist: List<TvChannel> = emptyList()
     private var pendingRestoreIndex: Int = 0
     private lateinit var player: ExoPlayer
+    private var vlcController: VlcPlaybackController? = null
+    private var activePlaybackEngine: String = "exo"
     private val channels = mutableListOf<TvChannel>()
     // Полный исходный плейлист хранится отдельно от отображаемых каналов, включая скрытые категории.
     private var allPlaylistChannels: List<TvChannel> = emptyList()
@@ -119,7 +123,7 @@ class MainActivity : AppCompatActivity() {
         if (::player.isInitialized && channels.isNotEmpty() && !isFinishing) {
             saveLastChannelIdentity()
             homeReturnPending = true
-            player.stop()
+            if (activePlaybackEngine == "vlc") vlcController?.stop() else player.stop()
         }
     }
 
@@ -251,7 +255,9 @@ class MainActivity : AppCompatActivity() {
             useController = false
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
-        root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        videoHost = FrameLayout(this).apply { setBackgroundColor(0xFF000000.toInt()) }
+        videoHost.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        root.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
         playbackBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(4), dp(18), dp(6))
@@ -639,17 +645,52 @@ class MainActivity : AppCompatActivity() {
         isChannelBuffering = true
         statusHandler.removeCallbacks(hideStatusRunnable)
         playbackBar.visibility = View.VISIBLE
-        player.setMediaItem(MediaItem.fromUri(channels[index].url))
-        player.prepare()
-        player.playWhenReady = true
+        val engine = prefs.getString("playback_engine", "exo") ?: "exo"
+        activePlaybackEngine = engine
+        if (engine == "vlc") {
+            runCatching {
+                player.pause()
+                player.clearMediaItems()
+                if (playerView.parent === videoHost) videoHost.removeView(playerView)
+                val controller = vlcController ?: VlcPlaybackController(this) { state, detail ->
+                    runOnUiThread {
+                        isChannelBuffering = state == VlcPlaybackController.State.OPENING || state == VlcPlaybackController.State.BUFFERING
+                        logEvent("libVLC: $state${detail?.let { " ($it)" } ?: ""}; канал=${channels.getOrNull(selectedChannel)?.name ?: "не выбран"}")
+                        if (state == VlcPlaybackController.State.ERROR) toast("Ошибка воспроизведения VLC")
+                        if (state == VlcPlaybackController.State.ENDED) toast("Поток завершён. Перезагрузите канал")
+                    }
+                }.also { vlcController = it }
+                if (controllerViewMissing()) controller.attachTo(videoHost)
+                controller.play(channels[index].url)
+            }.onFailure { error ->
+                logEvent("Ошибка запуска VLC: ${error.message}")
+                toast("Не удалось запустить VLC: ${error.localizedMessage ?: "ошибка"}")
+            }
+        } else {
+            vlcController?.stop()
+            vlcController?.detachFromHost()
+            if (playerView.parent !== videoHost) {
+                (playerView.parent as? ViewGroup)?.removeView(playerView)
+                videoHost.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+            }
+            player.setMediaItem(MediaItem.fromUri(channels[index].url))
+            player.prepare()
+            player.playWhenReady = true
+        }
         closeBrowser()
         updatePlaybackBar()
         showPlaybackBarForThreeSeconds()
     }
 
 
+    private fun controllerViewMissing(): Boolean = videoHost.childCount == 0 || vlcController == null
+
     private fun handleStreamEnded() {
         if (isFinishing || channels.isEmpty()) return
+        if (activePlaybackEngine == "vlc") {
+            toast("Перезагрузите канал")
+            return
+        }
         val index = selectedChannel
         val channelName = channels.getOrNull(index)?.name ?: "Текущий канал"
         if (endedRetryChannelIndex != index) {
@@ -1423,20 +1464,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun showEngineSettings() {
         val options = arrayOf(
-            "ExoPlayer / Media3 — подключён",
-            "VLC / libVLC — интеграция не завершена",
-            "mpv / libmpv — интеграция не завершена"
+            "ExoPlayer / Media3",
+            "VLC / libVLC",
+            "mpv / libmpv — пока не подключён"
         )
+        val current = when (prefs.getString("playback_engine", "exo")) { "vlc" -> 1; else -> 0 }
         android.app.AlertDialog.Builder(this)
             .setTitle("Движок воспроизведения")
-            .setSingleChoiceItems(options, 0) { dialog, which ->
+            .setSingleChoiceItems(options, current) { dialog, which ->
                 dialog.dismiss()
-                if (which == 0) {
-                    prefs.edit().putString("playback_engine", "exo").apply()
-                    toast("Выбран ExoPlayer / Media3")
-                } else {
-                    toast("Этот движок пока недоступен. Продолжает работать ExoPlayer / Media3.")
-                    logEvent("Выбран недоступный движок: ${if (which == 1) "VLC" else "mpv"}; фактический движок остаётся ExoPlayer / Media3")
+                when (which) {
+                    0 -> {
+                        prefs.edit().putString("playback_engine", "exo").apply()
+                        toast("Выбран ExoPlayer / Media3")
+                        if (channels.isNotEmpty()) playChannel(selectedChannel)
+                    }
+                    1 -> {
+                        prefs.edit().putString("playback_engine", "vlc").apply()
+                        toast("Выбран VLC / libVLC")
+                        if (channels.isNotEmpty()) playChannel(selectedChannel)
+                    }
+                    else -> toast("mpv пока не подключён")
                 }
             }
             .setNegativeButton("Закрыть", null)
@@ -2045,8 +2093,8 @@ class MainActivity : AppCompatActivity() {
         screen.addView(right, LinearLayout.LayoutParams(0, -1, 0.57f))
 
         // Переносим тот же PlayerView в правую часть, чтобы эфир продолжал отображаться без второго плеера.
-        (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
-        preview.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        (videoHost.parent as? android.view.ViewGroup)?.removeView(videoHost)
+        preview.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
 
         var firstRow: View? = null
         visibleSource.forEachIndexed { position, channel ->
@@ -2082,8 +2130,8 @@ class MainActivity : AppCompatActivity() {
         dialog.setCanceledOnTouchOutside(false)
         dialog.setOnDismissListener {
             // Возвращаем PlayerView на основной экран; выбранный для предпросмотра канал остаётся текущим.
-            (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
-            root.addView(playerView, 0, FrameLayout.LayoutParams(-1, -1))
+            (videoHost.parent as? android.view.ViewGroup)?.removeView(videoHost)
+            root.addView(videoHost, 0, FrameLayout.LayoutParams(-1, -1))
             val filtered = visiblePlaylistChannels(source)
             if (filtered.isNotEmpty()) {
                 val current = channels.indexOfFirst { it.url == channels.getOrNull(selectedChannel)?.url }
@@ -2244,6 +2292,8 @@ class MainActivity : AppCompatActivity() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         statusHandler.removeCallbacks(longOkRunnable)
         logEvent("Завершение приложения")
+        vlcController?.release()
+        vlcController = null
         if (::player.isInitialized) player.release()
         super.onDestroy()
     }
