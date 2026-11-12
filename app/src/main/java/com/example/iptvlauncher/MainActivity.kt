@@ -683,7 +683,7 @@ class MainActivity : AppCompatActivity() {
         if (channels.isEmpty()) return
         playbackBar.removeAllViews()
         val category = groups.getOrNull(groupIndex) ?: "Без категории"
-        val inGroup = channels.indices.filter { if (category == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == category }
+        val inGroup = channelIndicesByGroup[category].orEmpty()
         val position = inGroup.indexOf(selectedChannel).coerceAtLeast(0)
         val channel = channels.getOrNull(selectedChannel) ?: return
 
@@ -1136,7 +1136,7 @@ class MainActivity : AppCompatActivity() {
         if (!browserVisible) return
         channelList.removeAllViews()
         channelList.addView(label("${groups.getOrNull(groupIndex) ?: "КАНАЛЫ"}  •  КАНАЛЫ", 20f))
-        val indices = channels.indices.filter { if (groups[groupIndex] == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == groups[groupIndex] }
+        val indices = channelIndicesByGroup[groups[groupIndex]].orEmpty()
         var selectedRow: View? = null
         indices.forEach { index ->
             val isSelected = index == selectedChannel
