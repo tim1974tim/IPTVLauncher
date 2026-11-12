@@ -4,7 +4,7 @@
 
 ## Сборка APK
 1. Откройте папку `IPTVLauncher` в Android Studio.
-2. Дождитесь Gradle Sync и установки Android SDK Platform 35 (compileSdk).
+2. Дождитесь Gradle Sync и установки Android SDK Platform 36 (compileSdk).
 3. Выберите Build → Build Bundle(s) / APK(s) → Build APK(s).
 4. APK появится в `app/build/outputs/apk/debug/`.
 
