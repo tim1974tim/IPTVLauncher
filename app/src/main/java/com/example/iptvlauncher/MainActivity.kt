@@ -11,6 +11,10 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import android.net.Uri
+import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -64,6 +68,10 @@ class MainActivity : AppCompatActivity() {
     private var setupLoadButton: Button? = null
     private var setupFileButton: Button? = null
     private var setupFocusIndex = 0
+    private var pendingBackupJson: JSONObject? = null
+    private var pendingBackupContent: String? = null
+    private var restoreOfferDialog: android.app.AlertDialog? = null
+    private var restoreOfferButton: Button? = null
     private var setupWrapper: FrameLayout? = null
     private var optionsWrapper: FrameLayout? = null
     private var pendingPlaylist: List<TvChannel> = emptyList()
@@ -110,6 +118,55 @@ class MainActivity : AppCompatActivity() {
             thread {
                 val data = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 runOnUiThread { if (data != null) loadPlaylist(data) else toast("Не удалось открыть файл") }
+            }
+        }
+    }
+
+    private val createBackupFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val content = pendingBackupContent
+        pendingBackupContent = null
+        if (uri != null && content != null) {
+            thread(name = "settings-backup-write") {
+                val result = runCatching {
+                    contentResolver.openOutputStream(uri)?.bufferedWriter(Charsets.UTF_8)?.use { it.write(content) }
+                        ?: throw java.io.IOException("Не удалось открыть файл для записи")
+                }
+                runOnUiThread {
+                    if (result.isSuccess) toast("Резервная копия сохранена")
+                    else toast("Не удалось сохранить копию: ${result.exceptionOrNull()?.message ?: "ошибка"}")
+                }
+            }
+        }
+    }
+
+    private val openBackupFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            thread(name = "settings-backup-read") {
+                val parsed = runCatching {
+                    val text = contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                        ?: throw java.io.IOException("Не удалось прочитать файл")
+                    JSONObject(text)
+                }
+                runOnUiThread {
+                    if (parsed.isSuccess) {
+                        pendingBackupJson = parsed.getOrNull()
+                        val offer = restoreOfferDialog
+                        if (offer != null) {
+                            restoreOfferButton?.isEnabled = true
+                            restoreOfferButton?.alpha = 1f
+                            toast("Резервная копия выбрана")
+                        } else {
+                            android.app.AlertDialog.Builder(this)
+                                .setTitle("Восстановить настройки?")
+                                .setMessage("Выбран файл резервной копии. Текущие настройки будут заменены данными из копии.")
+                                .setNegativeButton("Отмена", null)
+                                .setPositiveButton("Восстановить") { _, _ -> restoreBackup(pendingBackupJson) }
+                                .show()
+                        }
+                    } else {
+                        toast("Не удалось прочитать резервную копию: ${parsed.exceptionOrNull()?.message ?: "неверный JSON"}")
+                    }
+                }
             }
         }
     }
@@ -268,7 +325,28 @@ class MainActivity : AppCompatActivity() {
         activePlaylistSlot = prefs.getInt("active_playlist_slot", 1).coerceIn(1, 2)
         val savedUrl = prefs.getString("playlist_${activePlaylistSlot}_url", null) ?: prefs.getString("playlist_url", null)
         val savedUri = prefs.getString("playlist_uri", null)
+        val cacheFileAvailable = java.io.File(filesDir, "playlist_cache.m3u").let { it.exists() && it.length() > 0L }
+        val restoredCache = cacheFileAvailable && (prefs.getBoolean("restored_from_backup", false) || prefs.getBoolean("restored_local_playlist", false))
         when {
+            restoredCache -> {
+                prefs.edit().remove("restored_from_backup").apply()
+                val cache = java.io.File(filesDir, "playlist_cache.m3u")
+                thread(name = "restored-playlist-cache") {
+                    val parsed = runCatching { M3uParser.parse(cache.readText()) }.getOrDefault(emptyList())
+                    runOnUiThread {
+                        if (parsed.isNotEmpty()) {
+                            allPlaylistChannels = parsed
+                            val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
+                            val visible = parsed.filter { it.group !in hidden }
+                            applyPlaylist(visible.ifEmpty { parsed }, prefs.getInt("last_channel", 0))
+                            if (!savedUrl.isNullOrBlank()) fetchPlaylist(savedUrl, selectedChannel, false)
+                        } else {
+                            toast("Кэш плейлиста из резервной копии повреждён")
+                            if (!savedUrl.isNullOrBlank()) fetchPlaylist(savedUrl, prefs.getInt("last_channel", -1)) else showSetup()
+                        }
+                    }
+                }
+            }
             savedUrl != null -> {
                 val cache = java.io.File(filesDir, "playlist_cache.m3u")
                 if (cache.exists() && cache.length() > 0L) {
@@ -315,10 +393,160 @@ class MainActivity : AppCompatActivity() {
             if (!isFinishing && !isDestroyed) {
                 banner.animate().alpha(0f).setDuration(200).withEndAction {
                     root.removeView(banner)
-                    showSetup()
+                    showRestoreOffer()
                 }.start()
             }
         }, 3_000L)
+    }
+
+    private fun showRestoreOffer() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(22), dp(28), dp(22))
+            setBackgroundColor(0xFF101722.toInt())
+        }
+        panel.addView(label("Восстановление настроек", 25f))
+        panel.addView(label("Если у вас есть резервная копия IPTV Launcher в формате JSON, выберите её для восстановления. Если копии нет, нажмите «Пропустить».", 16f).apply {
+            gravity = Gravity.CENTER
+            setTextColor(0xFFB8C4D4.toInt())
+        })
+        val searchButton = button("Поиск резервной копии вручную", focusable = true) {
+            openBackupFile.launch(arrayOf("application/json", "text/json", "*/*"))
+        }
+        val restoreButton = button("Восстановить", focusable = true) {
+            val backup = pendingBackupJson
+            if (backup == null) toast("Сначала выберите файл резервной копии")
+            else {
+                restoreOfferDialog?.dismiss()
+                restoreOfferDialog = null
+                restoreBackup(backup)
+            }
+        }.apply {
+            isEnabled = false
+            alpha = 0.45f
+        }
+        val skipButton = button("Пропустить", focusable = true) {
+            restoreOfferDialog?.dismiss()
+            restoreOfferDialog = null
+            pendingBackupJson = null
+            showSetup()
+        }
+        restoreOfferButton = restoreButton
+        panel.addView(searchButton, LinearLayout.LayoutParams(dp(620), dp(58)).apply { topMargin = dp(18); bottomMargin = dp(8) })
+        panel.addView(restoreButton, LinearLayout.LayoutParams(dp(620), dp(58)).apply { bottomMargin = dp(8) })
+        panel.addView(skipButton, LinearLayout.LayoutParams(dp(620), dp(58)))
+        restoreOfferDialog = android.app.AlertDialog.Builder(this).setView(panel).setCancelable(false).create()
+        restoreOfferDialog?.setOnDismissListener { restoreOfferDialog = null }
+        restoreOfferDialog?.show()
+        restoreOfferDialog?.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        restoreOfferDialog?.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(48), dp(760)), -2)
+        searchButton.requestFocus()
+    }
+
+    private fun buildBackupJson(): String {
+        val root = JSONObject()
+        root.put("format", "IPTVLauncherBackup")
+        root.put("version", 1)
+        root.put("createdAt", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(java.util.Date()))
+        val values = JSONObject()
+        prefs.all.forEach { (key, value) ->
+            val item = JSONObject()
+            when (value) {
+                is String -> { item.put("type", "string"); item.put("value", value) }
+                is Boolean -> { item.put("type", "boolean"); item.put("value", value) }
+                is Int -> { item.put("type", "int"); item.put("value", value) }
+                is Long -> { item.put("type", "long"); item.put("value", value) }
+                is Float -> { item.put("type", "float"); item.put("value", value.toDouble()) }
+                is Set<*> -> {
+                    item.put("type", "stringSet")
+                    val array = JSONArray()
+                    value.filterIsInstance<String>().sorted().forEach { array.put(it) }
+                    item.put("value", array)
+                }
+                else -> return@forEach
+            }
+            values.put(key, item)
+        }
+        root.put("preferences", values)
+        val cache = java.io.File(filesDir, "playlist_cache.m3u")
+        if (cache.exists() && cache.length() <= 30L * 1024L * 1024L) {
+            root.put("playlistCacheBase64", Base64.encodeToString(cache.readBytes(), Base64.NO_WRAP))
+        }
+        return root.toString(2)
+    }
+
+    private fun createSettingsBackup() {
+        try {
+            pendingBackupContent = buildBackupJson()
+            createBackupFile.launch("IPTVLauncher-backup-${java.text.SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(java.util.Date())}.json")
+        } catch (e: Exception) {
+            pendingBackupContent = null
+            toast("Не удалось подготовить копию: ${e.message ?: "ошибка"}")
+        }
+    }
+
+    private fun chooseBackupToRestore() {
+        openBackupFile.launch(arrayOf("application/json", "text/json", "*/*"))
+    }
+
+    private fun restoreBackup(backup: JSONObject?) {
+        if (backup == null) { toast("Сначала выберите резервную копию"); return }
+        if (backup.optString("format") != "IPTVLauncherBackup" || backup.optInt("version", -1) != 1) {
+            toast("Формат резервной копии не поддерживается")
+            return
+        }
+        val values = backup.optJSONObject("preferences") ?: run {
+            toast("В резервной копии отсутствуют настройки")
+            return
+        }
+        try {
+            val cacheEncoded = backup.optString("playlistCacheBase64", "")
+            val restoredCacheBytes = if (cacheEncoded.isNotBlank()) Base64.decode(cacheEncoded, Base64.DEFAULT) else null
+            if (restoredCacheBytes != null && restoredCacheBytes.size > 30 * 1024 * 1024) {
+                throw IllegalArgumentException("Кэш плейлиста слишком большой")
+            }
+            val backupPrefs = backup.optJSONObject("preferences") ?: JSONObject()
+            fun hasNonBlankPreference(key: String): Boolean =
+                backupPrefs.optJSONObject(key)?.optString("value", "")?.isNotBlank() == true
+            val hasPlaylistUrl = hasNonBlankPreference("playlist_url") ||
+                hasNonBlankPreference("playlist_1_url") || hasNonBlankPreference("playlist_2_url")
+            val editor = prefs.edit().clear()
+            val keys = values.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val item = values.optJSONObject(key) ?: continue
+                val value = item.opt("value")
+                when (item.optString("type")) {
+                    "string" -> if (value is String) editor.putString(key, value)
+                    "boolean" -> editor.putBoolean(key, value as? Boolean ?: false)
+                    "int" -> editor.putInt(key, (value as? Number)?.toInt() ?: 0)
+                    "long" -> editor.putLong(key, (value as? Number)?.toLong() ?: 0L)
+                    "float" -> editor.putFloat(key, (value as? Number)?.toFloat() ?: 0f)
+                    "stringSet" -> {
+                        val array = item.optJSONArray("value") ?: JSONArray()
+                        val set = mutableSetOf<String>()
+                        for (i in 0 until array.length()) if (!array.isNull(i)) set.add(array.optString(i))
+                        editor.putStringSet(key, set)
+                    }
+                }
+            }
+            editor.putBoolean("restored_from_backup", true)
+                .putBoolean("restored_local_playlist", restoredCacheBytes != null && !hasPlaylistUrl)
+                .putBoolean("first_launch_banner_shown", true)
+            if (restoredCacheBytes != null && !hasPlaylistUrl) editor.remove("playlist_uri")
+            editor.apply()
+            if (restoredCacheBytes != null) {
+                java.io.File(filesDir, "playlist_cache.m3u").writeBytes(restoredCacheBytes)
+            } else {
+                java.io.File(filesDir, "playlist_cache.m3u").delete()
+            }
+            pendingBackupJson = null
+            toast("Настройки восстановлены. Перезапуск приложения…")
+            statusHandler.postDelayed({ if (!isFinishing) recreate() }, 700L)
+        } catch (e: Exception) {
+            toast("Ошибка восстановления: ${e.message ?: "неверные данные"}")
+        }
     }
 
     private fun showSetup() {
@@ -470,7 +698,7 @@ class MainActivity : AppCompatActivity() {
                     if (parsed.isEmpty()) toast("В ответе сервера не найдены каналы M3U")
                     else {
                         allPlaylistChannels = parsed
-                        prefs.edit().putString("playlist_url", parsedUrl).putString("playlist_${activePlaylistSlot}_url", parsedUrl).remove("playlist_uri").apply()
+                        prefs.edit().putString("playlist_url", parsedUrl).putString("playlist_${activePlaylistSlot}_url", parsedUrl).remove("playlist_uri").putBoolean("restored_local_playlist", false).apply()
                         prefs.edit().putLong("playlist_updated_at", System.currentTimeMillis()).apply()
                         if (showOptions) showPlaylistOptions(parsed, restoreIndex) else {
                             val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
@@ -488,6 +716,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadPlaylist(data: String) {
+        runCatching { java.io.File(filesDir, "playlist_cache.m3u").writeText(data) }
+        prefs.edit().putBoolean("restored_local_playlist", false).apply()
         thread(name = "playlist-parse") {
             val parsed = M3uParser.parse(data)
             runOnUiThread {
@@ -1881,6 +2111,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         settings.addView(onlyFav)
+
+        section("РЕЗЕРВНОЕ КОПИРОВАНИЕ")
+        settingButton("Создать резервную копию настроек (JSON)") { createSettingsBackup() }
+        settingButton("Восстановить настройки из копии") { chooseBackupToRestore() }
 
         section("ДОПОЛНИТЕЛЬНО")
         settingButton("Обновить EPG вручную") {
