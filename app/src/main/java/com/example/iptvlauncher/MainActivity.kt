@@ -17,6 +17,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.ui.PlayerView
@@ -85,6 +87,7 @@ class MainActivity : AppCompatActivity() {
     private var browserVisible = false
     private var homeReturnPending = false
     private val prefs by lazy { getSharedPreferences("iptv", MODE_PRIVATE) }
+    private val decoderNames = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -129,12 +132,43 @@ class MainActivity : AppCompatActivity() {
             .setConnectTimeoutMs(45_000)
             .setReadTimeoutMs(120_000)
             .setAllowCrossProtocolRedirects(true)
-        // Разрешаем Media3 подобрать альтернативный декодер, если основной
-        // аппаратный декодер недоступен или не может быть инициализирован.
-        // Это диагностический шаг; принудительно переводить все каналы
-        // на программное декодирование не нужно.
+        // Режим выбирается пользователем в меню декодера.
+        // 0 auto; 1 hardware preferred; 2 hardware only; 3 software preferred;
+        // 4 software only; 5 standard selector + Media3 decoder fallback.
+        val decoderMode = prefs.getInt("video_decoder_mode", 0).coerceIn(0, 5)
         val renderersFactory = DefaultRenderersFactory(this)
-            .setEnableDecoderFallback(true)
+            .setEnableDecoderFallback(decoderMode == 5)
+        if (decoderMode in 1..4) {
+            renderersFactory.setMediaCodecSelector(object : MediaCodecSelector {
+                override fun getDecoderInfos(
+                    mimeType: String,
+                    requiresSecureDecoder: Boolean,
+                    requiresTunnelingDecoder: Boolean
+                ): List<MediaCodecInfo> {
+                    val available = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                        mimeType, requiresSecureDecoder, requiresTunnelingDecoder
+                    )
+                    val hardware = available.filter { it.hardwareAccelerated }
+                    val software = available.filter { it.softwareOnly }
+                    val chosen = when (decoderMode) {
+                        1 -> hardware + software
+                        2 -> hardware
+                        3 -> software + hardware
+                        4 -> software
+                        else -> available
+                    }
+                    decoderNames.addAll(chosen.map { it.name })
+                    return chosen
+                }
+            })
+        } else {
+            // Записываем список декодеров, который Android предлагает в обычном режиме.
+            runCatching {
+                val selector = MediaCodecSelector.DEFAULT
+                listOf("video/avc", "video/hevc", "video/mp4v-es", "video/x-vnd.on2.vp9")
+                    .forEach { mime -> selector.getDecoderInfos(mime, false, false).forEach { decoderNames.add(it.name) } }
+            }
+        }
         player = ExoPlayer.Builder(this)
             .setRenderersFactory(renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(streamDataSourceFactory))
@@ -1309,6 +1343,51 @@ class MainActivity : AppCompatActivity() {
         if (channels.isNotEmpty()) updatePlaybackBar()
     }
 
+    private fun showDecoderSettings() {
+        val options = arrayOf(
+            "Автоматический — выбор Android (рекомендуется)",
+            "Аппаратный — аппаратные декодеры в приоритете",
+            "Только аппаратный — без программных декодеров",
+            "Программный — программные декодеры в приоритете",
+            "Только программный — без аппаратных декодеров",
+            "Аппаратный с резервным — разрешить fallback Media3"
+        )
+        val descriptions = arrayOf(
+            "Android сам выбирает подходящий декодер.",
+            "Сначала предлагаются аппаратные декодеры; программные остаются запасным вариантом.",
+            "Оставляются только декодеры, которые Android пометил как аппаратные. Если подходящего нет, канал может не запуститься.",
+            "Сначала предлагаются программные декодеры; аппаратные остаются запасным вариантом.",
+            "Оставляются только декодеры, которые Android пометил как программные. Если подходящего нет, канал может не запуститься.",
+            "Используется обычный список Android и разрешается резервный декодер при ошибке инициализации. Этот режим не гарантирует восстановление зависшей картинки."
+        )
+        val current = prefs.getInt("video_decoder_mode", 0).coerceIn(0, 5)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Режим видеодекодера")
+            .setSingleChoiceItems(options, current) { dialog, which ->
+                prefs.edit().putInt("video_decoder_mode", which).apply()
+                dialog.dismiss()
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Режим сохранён")
+                    .setMessage(descriptions[which] + "\n\nДля применения полностью закройте IPTVLauncher и запустите его снова. Если канал не запускается, вернитесь в автоматический режим.")
+                    .setPositiveButton("Понятно", null)
+                    .show()
+            }
+            .setNeutralButton("Информация о декодерах") { _, _ -> showDecoderInfo() }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun showDecoderInfo() {
+        val names = synchronized(decoderNames) { decoderNames.toList().sorted() }
+        val device = "Устройство: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}\nAndroid: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})"
+        val list = if (names.isEmpty()) "Список ещё не получен. Перезапустите приложение после выбора режима." else names.joinToString("\n")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Информация о декодерах")
+            .setMessage("$device\n\nДекодеры, обнаруженные Android:\n$list\n\nЭто список доступных декодеров, а не подтверждение того, какой из них сейчас обрабатывает канал.")
+            .setPositiveButton("Понятно", null)
+            .show()
+    }
+
     private fun showAppearanceSettings() {
         val accent = currentPalette()[1]
         val bg = 0xFF080B12.toInt()
@@ -1690,6 +1769,7 @@ class MainActivity : AppCompatActivity() {
             if (source.isNotEmpty()) showCategorySettings(source)
         }
         settingButton("Настройка избранного") { showFavoritesSettings() }
+        settingButton("Режим видеодекодера") { showDecoderSettings() }
         settingButton("Открыть настройки приставки") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
                 .onFailure { toast("Не удалось открыть настройки приставки") }
