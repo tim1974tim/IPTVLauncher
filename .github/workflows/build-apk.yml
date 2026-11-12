@@ -1,4 +1,3 @@
-
 name: Build IPTV Launcher APK
 
 on:
@@ -9,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -33,17 +33,27 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Verify Gradle version
+        run: |
+          gradle --version
+          gradle --version | grep -q 'Gradle 8.11.1'
 
       - name: Build debug APK
         run: gradle --no-daemon clean :app:assembleDebug
 
       - name: Name APK with version
-        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.3.4.apk
+        run: |
+          VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          test -n "$VERSION"
+          cp app/build/outputs/apk/debug/app-debug.apk "IPTVLauncher-v${VERSION}.apk"
+          echo "APK_NAME=IPTVLauncher-v${VERSION}.apk" >> "$GITHUB_ENV"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTVLauncher-v0.3.4
-          path: IPTVLauncher-v0.3.4.apk
+          name: IPTVLauncher-${{ env.APK_NAME }}
+          path: ${{ env.APK_NAME }}
           if-no-files-found: error
