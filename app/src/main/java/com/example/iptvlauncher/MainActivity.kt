@@ -29,8 +29,6 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var playerView: PlayerView
-    // Общий контейнер видеовывода: его можно переносить между основным экраном и предпросмотром.
-    private lateinit var videoHost: FrameLayout
     private lateinit var browser: LinearLayout
     private lateinit var channelList: LinearLayout
     private lateinit var channelScroll: ScrollView
@@ -71,8 +69,6 @@ class MainActivity : AppCompatActivity() {
     private var pendingPlaylist: List<TvChannel> = emptyList()
     private var pendingRestoreIndex: Int = 0
     private lateinit var player: ExoPlayer
-    private var vlcController: VlcPlaybackController? = null
-    private var activePlaybackEngine: String = "exo"
     private val channels = mutableListOf<TvChannel>()
     // Полный исходный плейлист хранится отдельно от отображаемых каналов, включая скрытые категории.
     private var allPlaylistChannels: List<TvChannel> = emptyList()
@@ -88,6 +84,7 @@ class MainActivity : AppCompatActivity() {
     private var epgById: Map<String, List<EpgProgramme>> = emptyMap()
     private var epgByName: Map<String, List<EpgProgramme>> = emptyMap()
     private var groups = listOf<String>()
+    private var channelIndicesByGroup: Map<String, List<Int>> = emptyMap()
     private var groupIndex = 0
     private var activePlaylistSlot = 1
     private var selectedChannel = 0
@@ -123,7 +120,7 @@ class MainActivity : AppCompatActivity() {
         if (::player.isInitialized && channels.isNotEmpty() && !isFinishing) {
             saveLastChannelIdentity()
             homeReturnPending = true
-            if (activePlaybackEngine == "vlc") vlcController?.stop() else player.stop()
+            player.stop()
         }
     }
 
@@ -255,9 +252,7 @@ class MainActivity : AppCompatActivity() {
             useController = false
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         }
-        videoHost = FrameLayout(this).apply { setBackgroundColor(0xFF000000.toInt()) }
-        videoHost.addView(playerView, FrameLayout.LayoutParams(-1, -1))
-        root.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
+        root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
         playbackBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(4), dp(18), dp(6))
@@ -600,6 +595,7 @@ class MainActivity : AppCompatActivity() {
             groups = if (channels.isNotEmpty()) listOf("Избранное") else emptyList()
         }
         if (groups.isEmpty()) groups = channels.map { it.group }.distinct().ifEmpty { listOf("Без категории") }
+        rebuildChannelIndex()
         groupIndex = 0
         val index = resolveLastChannelIndex(channels, restoreIndex)
         selectedChannel = index
@@ -645,52 +641,17 @@ class MainActivity : AppCompatActivity() {
         isChannelBuffering = true
         statusHandler.removeCallbacks(hideStatusRunnable)
         playbackBar.visibility = View.VISIBLE
-        val engine = prefs.getString("playback_engine", "exo") ?: "exo"
-        activePlaybackEngine = engine
-        if (engine == "vlc") {
-            runCatching {
-                player.pause()
-                player.clearMediaItems()
-                if (playerView.parent === videoHost) videoHost.removeView(playerView)
-                val controller = vlcController ?: VlcPlaybackController(this) { state, detail ->
-                    runOnUiThread {
-                        isChannelBuffering = state == VlcPlaybackController.State.OPENING || state == VlcPlaybackController.State.BUFFERING
-                        logEvent("libVLC: $state${detail?.let { " ($it)" } ?: ""}; канал=${channels.getOrNull(selectedChannel)?.name ?: "не выбран"}")
-                        if (state == VlcPlaybackController.State.ERROR) toast("Ошибка воспроизведения VLC")
-                        if (state == VlcPlaybackController.State.ENDED) toast("Поток завершён. Перезагрузите канал")
-                    }
-                }.also { vlcController = it }
-                if (controllerViewMissing()) controller.attachTo(videoHost)
-                controller.play(channels[index].url)
-            }.onFailure { error ->
-                logEvent("Ошибка запуска VLC: ${error.message}")
-                toast("Не удалось запустить VLC: ${error.localizedMessage ?: "ошибка"}")
-            }
-        } else {
-            vlcController?.stop()
-            vlcController?.detachFromHost()
-            if (playerView.parent !== videoHost) {
-                (playerView.parent as? ViewGroup)?.removeView(playerView)
-                videoHost.addView(playerView, FrameLayout.LayoutParams(-1, -1))
-            }
-            player.setMediaItem(MediaItem.fromUri(channels[index].url))
-            player.prepare()
-            player.playWhenReady = true
-        }
+        player.setMediaItem(MediaItem.fromUri(channels[index].url))
+        player.prepare()
+        player.playWhenReady = true
         closeBrowser()
         updatePlaybackBar()
         showPlaybackBarForThreeSeconds()
     }
 
 
-    private fun controllerViewMissing(): Boolean = videoHost.childCount == 0 || vlcController == null
-
     private fun handleStreamEnded() {
         if (isFinishing || channels.isEmpty()) return
-        if (activePlaybackEngine == "vlc") {
-            toast("Перезагрузите канал")
-            return
-        }
         val index = selectedChannel
         val channelName = channels.getOrNull(index)?.name ?: "Текущий канал"
         if (endedRetryChannelIndex != index) {
@@ -1104,10 +1065,20 @@ class MainActivity : AppCompatActivity() {
     private fun normalizeEpgName(value: String): String = value.lowercase(Locale.ROOT)
         .replace(Regex("[^\\p{L}\\p{N}]"), "")
 
+    private fun rebuildChannelIndex() {
+        val favorites = favoriteUrls()
+        channelIndicesByGroup = groups.associateWith { category ->
+            channels.indices.filter { index ->
+                val channel = channels[index]
+                if (category == "Избранное") channel.url in favorites else channel.group == category
+            }
+        }
+    }
+
     private fun changeChannelInGroup(direction: Int) {
         if (channels.isEmpty()) return
         val category = groups.getOrNull(groupIndex) ?: return
-        val indices = channels.indices.filter { if (category == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == category }
+        val indices = channelIndicesByGroup[category].orEmpty()
         if (indices.isEmpty()) return
         val position = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
         val nextPosition = (position + direction).coerceIn(0, indices.lastIndex)
@@ -1460,35 +1431,6 @@ class MainActivity : AppCompatActivity() {
         lp.bottomMargin = if (statusAtTop()) 0 else dp(28)
         playbackBar.layoutParams = lp
         if (channels.isNotEmpty()) updatePlaybackBar()
-    }
-
-    private fun showEngineSettings() {
-        val options = arrayOf(
-            "ExoPlayer / Media3",
-            "VLC / libVLC",
-            "mpv / libmpv — пока не подключён"
-        )
-        val current = when (prefs.getString("playback_engine", "exo")) { "vlc" -> 1; else -> 0 }
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Движок воспроизведения")
-            .setSingleChoiceItems(options, current) { dialog, which ->
-                dialog.dismiss()
-                when (which) {
-                    0 -> {
-                        prefs.edit().putString("playback_engine", "exo").apply()
-                        toast("Выбран ExoPlayer / Media3")
-                        if (channels.isNotEmpty()) playChannel(selectedChannel)
-                    }
-                    1 -> {
-                        prefs.edit().putString("playback_engine", "vlc").apply()
-                        toast("Выбран VLC / libVLC")
-                        if (channels.isNotEmpty()) playChannel(selectedChannel)
-                    }
-                    else -> toast("mpv пока не подключён")
-                }
-            }
-            .setNegativeButton("Закрыть", null)
-            .show()
     }
 
     private fun showDiagnosticLog() {
@@ -1950,7 +1892,6 @@ class MainActivity : AppCompatActivity() {
             if (source.isNotEmpty()) showCategorySettings(source)
         }
         settingButton("Настройка избранного") { showFavoritesSettings() }
-        settingButton("Движок воспроизведения") { showEngineSettings() }
         settingButton("Режим видеодекодера") { showDecoderSettings() }
         settingButton("Журнал ошибок и событий") { showDiagnosticLog() }
         settingButton("Открыть настройки приставки") {
@@ -2093,8 +2034,8 @@ class MainActivity : AppCompatActivity() {
         screen.addView(right, LinearLayout.LayoutParams(0, -1, 0.57f))
 
         // Переносим тот же PlayerView в правую часть, чтобы эфир продолжал отображаться без второго плеера.
-        (videoHost.parent as? android.view.ViewGroup)?.removeView(videoHost)
-        preview.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
+        (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
+        preview.addView(playerView, FrameLayout.LayoutParams(-1, -1))
 
         var firstRow: View? = null
         visibleSource.forEachIndexed { position, channel ->
@@ -2130,8 +2071,8 @@ class MainActivity : AppCompatActivity() {
         dialog.setCanceledOnTouchOutside(false)
         dialog.setOnDismissListener {
             // Возвращаем PlayerView на основной экран; выбранный для предпросмотра канал остаётся текущим.
-            (videoHost.parent as? android.view.ViewGroup)?.removeView(videoHost)
-            root.addView(videoHost, 0, FrameLayout.LayoutParams(-1, -1))
+            (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
+            root.addView(playerView, 0, FrameLayout.LayoutParams(-1, -1))
             val filtered = visiblePlaylistChannels(source)
             if (filtered.isNotEmpty()) {
                 val current = channels.indexOfFirst { it.url == channels.getOrNull(selectedChannel)?.url }
@@ -2252,7 +2193,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectFirstChannelInGroup() {
-        selectedChannel = channels.indexOfFirst { if (groups[groupIndex] == "Избранное") it.url in favoriteUrls() else it.group == groups[groupIndex] }.coerceAtLeast(0)
+        selectedChannel = channelIndicesByGroup[groups.getOrNull(groupIndex)].orEmpty().firstOrNull() ?: 0
     }
 
     private fun statusText(value: String, size: Float) = TextView(this).apply {
@@ -2292,8 +2233,6 @@ class MainActivity : AppCompatActivity() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         statusHandler.removeCallbacks(longOkRunnable)
         logEvent("Завершение приложения")
-        vlcController?.release()
-        vlcController = null
         if (::player.isInitialized) player.release()
         super.onDestroy()
     }

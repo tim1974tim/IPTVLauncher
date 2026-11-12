@@ -12,25 +12,16 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Read app version
-        id: app-version
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
-          VERSION_CODE=$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
-          test -n "$VERSION_NAME"
-          test -n "$VERSION_CODE"
-          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
-          echo "apk_name=IPTVLauncher-v${VERSION_NAME}.apk" >> "$GITHUB_OUTPUT"
-
       - name: Verify launcher icon sources
         run: |
           set -euxo pipefail
-          for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-            test -s "app/src/main/res/mipmap-${density}/ic_launcher.png"
-          done
+          test -s app/src/main/res/mipmap-mdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-hdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          test -s app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          sha256sum app/src/main/res/mipmap-*/ic_launcher.png
+          grep -q 'versionCode = 22' app/build.gradle.kts
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -41,24 +32,17 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
-          cache-disabled: true
-
-      - name: Verify Gradle version
-        run: |
-          gradle --version
-          GRADLE_VERSION=$(gradle --version | awk '/^Gradle / {print $2; exit}')
-          test "$GRADLE_VERSION" = '8.11.1'
+          gradle-version: '8.9'
 
       - name: Build debug APK
         run: gradle --no-daemon clean :app:assembleDebug
 
       - name: Name APK with version
-        run: cp app/build/outputs/apk/debug/app-debug.apk "${{ steps.app-version.outputs.apk_name }}"
+        run: cp app/build/outputs/apk/debug/app-debug.apk IPTVLauncher-v0.4.18.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTVLauncher-v${{ steps.app-version.outputs.version_name }}-code${{ steps.app-version.outputs.version_code }}
-          path: ${{ steps.app-version.outputs.apk_name }}
+          name: IPTVLauncher-v0.4.17
+          path: IPTVLauncher-v0.4.18.apk
           if-no-files-found: error
