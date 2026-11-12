@@ -22,7 +22,7 @@ jobs:
           test -s app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           test -s app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           sha256sum app/src/main/res/mipmap-*/ic_launcher.png
-          grep -q 'versionCode = 19' app/build.gradle.kts
+          grep -q 'versionCode = 20' app/build.gradle.kts
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
