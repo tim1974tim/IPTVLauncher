@@ -38,6 +38,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var channelScroll: ScrollView
     private lateinit var programmeDetails: LinearLayout
     private lateinit var playbackBar: LinearLayout
+    private var alternativeChannelOverlay: LinearLayout? = null
+    private var alternativeNavigationVisible = false
     private val statusHandler = Handler(Looper.getMainLooper())
     private var okLongPressTriggered = false
     private val longOkRunnable = Runnable { if (!browserVisible && channels.isNotEmpty()) { okLongPressTriggered = true; showAppearanceSettings() } }
@@ -61,6 +63,8 @@ class MainActivity : AppCompatActivity() {
     private val hideStatusRunnable = Runnable {
         if (!browserVisible && !isChannelBuffering && ::playbackBar.isInitialized) {
             playbackBar.visibility = View.GONE
+            alternativeChannelOverlay?.visibility = View.GONE
+            alternativeNavigationVisible = false
         }
     }
     private lateinit var urlInput: EditText
@@ -988,10 +992,139 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
+    private fun alternativeNavigationEnabled() =
+        prefs.getBoolean("alternative_channel_navigation", false)
+
+    /**
+     * Боковая панель альтернативной навигации: девять строк, центральная
+     * строка (пятая) остаётся на месте, а содержимое окна сдвигается по категории.
+     */
+    private fun ensureAlternativeChannelOverlay() {
+        if (alternativeChannelOverlay != null || channels.isEmpty()) return
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xD9101722.toInt())
+                cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), 0x664F6B8A)
+            }
+        }
+        alternativeChannelOverlay = panel
+        root.addView(panel, FrameLayout.LayoutParams(dp(310), -2, Gravity.START or Gravity.CENTER_VERTICAL).apply {
+            leftMargin = dp(12)
+            // Не перекрываем статус-бар: панель размещается с противоположной стороны.
+            if (statusAtTop()) topMargin = dp((176 * statusSizeScale()).toInt() + 12)
+            else bottomMargin = dp((176 * statusSizeScale()).toInt() + 12)
+        })
+    }
+
+    private fun refreshAlternativeChannelOverlay() {
+        if (!alternativeNavigationEnabled() || channels.isEmpty()) return
+        ensureAlternativeChannelOverlay()
+        val panel = alternativeChannelOverlay ?: return
+        panel.removeAllViews()
+
+        val category = groups.getOrNull(groupIndex) ?: return
+        val indices = channelIndicesByGroup[category].orEmpty()
+        if (indices.isEmpty()) {
+            panel.visibility = View.GONE
+            return
+        }
+
+        val selectedPosition = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
+
+        // Всегда рисуем ровно девять позиций относительно текущего канала.
+        // Текущий канал находится в пятой строке; у начала/конца категории
+        // свободные позиции остаются пустыми, а индикатор не сдвигается.
+        for (slot in 0 until 9) {
+            val windowPosition = selectedPosition + slot - 4
+            if (windowPosition !in indices.indices) {
+                panel.addView(View(this).apply { isFocusable = false },
+                    LinearLayout.LayoutParams(-1, dp(52)).apply {
+                        bottomMargin = if (slot == 8) 0 else dp(3)
+                    })
+                continue
+            }
+
+            val channelIndex = indices[windowPosition]
+            val channel = channels[channelIndex]
+            val isCurrent = channelIndex == selectedChannel
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(3), dp(8), dp(3))
+                background = if (isCurrent) {
+                    android.graphics.drawable.GradientDrawable().apply {
+                        setColor(0xFF174F83.toInt())
+                        cornerRadius = dp(7).toFloat()
+                        setStroke(dp(2), 0xFF62B6FF.toInt())
+                    }
+                } else {
+                    android.graphics.drawable.GradientDrawable().apply {
+                        setColor(0x55202B39)
+                        cornerRadius = dp(7).toFloat()
+                    }
+                }
+            }
+            val logo = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                contentDescription = "Логотип ${channel.name}"
+            }
+            row.addView(logo, LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(9) })
+            if (!channel.logo.isNullOrBlank()) {
+                val logoUrl = channel.logo!!
+                logo.tag = logoUrl
+                thread(name = "alt-channel-logo") {
+                    try {
+                        val bitmap = OkHttpClient().newCall(Request.Builder().url(logoUrl).build()).execute().use { response ->
+                            if (!response.isSuccessful) null else response.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
+                        }
+                        if (bitmap != null) runOnUiThread {
+                            if (logo.tag == logoUrl && !isFinishing && !isDestroyed) logo.setImageBitmap(bitmap)
+                        }
+                    } catch (_: Exception) { }
+                }
+            }
+            val label = TextView(this).apply {
+                text = channel.name
+                textSize = 14f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTypeface(null, if (isCurrent) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+                setTextColor(if (isCurrent) 0xFFFFFFFF.toInt() else 0xFFE1E8F0.toInt())
+            }
+            row.addView(label, LinearLayout.LayoutParams(0, -1, 1f))
+            panel.addView(row, LinearLayout.LayoutParams(-1, dp(52)).apply {
+                bottomMargin = if (slot == 8) 0 else dp(3)
+            })
+        }
+        panel.visibility = View.VISIBLE
+    }
+
+    private fun showAlternativeNavigationForThreeSeconds() {
+        if (!alternativeNavigationEnabled() || browserVisible || channels.isEmpty()) return
+        updatePlaybackBar()
+        playbackBar.visibility = View.VISIBLE
+        refreshAlternativeChannelOverlay()
+        alternativeNavigationVisible = true
+        alternativeChannelOverlay?.visibility = View.VISIBLE
+        statusHandler.removeCallbacks(hideStatusRunnable)
+        if (!isChannelBuffering) statusHandler.postDelayed(hideStatusRunnable, 3_000L)
+    }
+
     private fun showPlaybackBarForThreeSeconds() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         if (!browserVisible && channels.isNotEmpty()) {
             playbackBar.visibility = View.VISIBLE
+            if (alternativeNavigationEnabled()) {
+                refreshAlternativeChannelOverlay()
+                alternativeNavigationVisible = true
+                alternativeChannelOverlay?.visibility = View.VISIBLE
+            }
             if (!isChannelBuffering) statusHandler.postDelayed(hideStatusRunnable, 3_000L)
         }
     }
@@ -1581,10 +1714,26 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_UP -> { changeChannelInGroup(-1); return true }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> { changeChannelInGroup(1); return true }
-                    KeyEvent.KEYCODE_DPAD_LEFT -> { changeGroup(-1); return true }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> { changeGroup(1); return true }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        changeChannelInGroup(-1)
+                        if (alternativeNavigationEnabled()) showAlternativeNavigationForThreeSeconds()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        changeChannelInGroup(1)
+                        if (alternativeNavigationEnabled()) showAlternativeNavigationForThreeSeconds()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        changeGroup(-1)
+                        if (alternativeNavigationEnabled()) showAlternativeNavigationForThreeSeconds()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        changeGroup(1)
+                        if (alternativeNavigationEnabled()) showAlternativeNavigationForThreeSeconds()
+                        return true
+                    }
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> return true
                 }
             }
@@ -2165,6 +2314,13 @@ class MainActivity : AppCompatActivity() {
         settingButton("Выбор категорий плейлиста") {
             val source = allPlaylistChannels.ifEmpty { channels.toList() }
             if (source.isNotEmpty()) showCategorySettings(source)
+        }
+        settingButton("Альтернативная навигация по каналам: " + if (alternativeNavigationEnabled()) "ВКЛ" else "ВЫКЛ", alternativeNavigationEnabled()) {
+            val enabled = !alternativeNavigationEnabled()
+            prefs.edit().putBoolean("alternative_channel_navigation", enabled).apply()
+            if (!enabled) { alternativeChannelOverlay?.visibility = View.GONE; alternativeNavigationVisible = false }
+            else showAlternativeNavigationForThreeSeconds()
+            toast(if (enabled) "Альтернативная навигация включена" else "Альтернативная навигация выключена")
         }
         settingButton("Настройка избранного") { showFavoritesSettings() }
         settingButton("Сортировка избранного") { showFavoritesSorting() }
