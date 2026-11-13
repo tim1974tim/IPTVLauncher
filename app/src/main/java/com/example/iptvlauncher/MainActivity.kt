@@ -2409,7 +2409,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, dp(18))
         })
         right.addView(TextView(this@MainActivity).apply {
-            text = "ОК — зафиксировать канал\\n\\nВВЕРХ / ВНИЗ — переместить зафиксированный канал\\n\\nОК — снять фиксацию\\n\\nНАЗАД — сохранить порядок и выйти"
+            text = "ВВЕРХ / ВНИЗ — выбрать канал\\n\\nОК — начать перемещение\\n\\nВВЕРХ / ВНИЗ — изменить его позицию\\n\\nОК — завершить перемещение\\n\\nНАЗАД — сохранить и выйти"
             textSize = 17f
             setTextColor(0xFFD5DFEC.toInt())
             setLineSpacing(dp(3).toFloat(), 1f)
@@ -2440,7 +2440,7 @@ class MainActivity : AppCompatActivity() {
                 val row = TextView(this).apply {
                     text = when {
                         isMoving -> "⬆  ПЕРЕМЕЩАЕТСЯ  ⬇\\n${index + 1}. ${channel.name}"
-                        isFocusedRow -> "▶  ${index + 1}. ${channel.name}"
+                        isFocusedRow -> "➤  ВЫБРАНО\\n${index + 1}. ${channel.name}"
                         else -> "     ${index + 1}. ${channel.name}"
                     }
                     textSize = if (isMoving) 17f else 16f
@@ -2454,13 +2454,13 @@ class MainActivity : AppCompatActivity() {
                         cornerRadius = dp(8).toFloat()
                         setColor(when {
                             isMoving -> 0xFF075D3A.toInt()
-                            isFocusedRow -> 0xFF24466B.toInt()
+                            isFocusedRow -> 0xFF174F83.toInt()
                             else -> 0xFF1B2635.toInt()
                         })
                         setStroke(dp(if (isMoving) 4 else if (isFocusedRow) 3 else 1),
                             when {
                                 isMoving -> 0xFF72FFB0.toInt()
-                                isFocusedRow -> currentPalette()[1]
+                                isFocusedRow -> 0xFF62B6FF.toInt()
                                 else -> 0xFF34445A.toInt()
                             })
                     }
@@ -2479,16 +2479,29 @@ class MainActivity : AppCompatActivity() {
                                 true
                             }
                             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                if (!locked || index != focusedIndex) return@setOnKeyListener false
                                 val delta = if (keyCode == KeyEvent.KEYCODE_DPAD_UP) -1 else 1
-                                val target = (focusedIndex + delta).coerceIn(0, ordered.lastIndex)
-                                if (target != focusedIndex) {
-                                    val item = ordered.removeAt(focusedIndex)
-                                    ordered.add(target, item)
-                                    focusedIndex = target
-                                    renderRows(target)
+
+                                if (!locked) {
+                                    // Обычная навигация по списку: курсор явно перемещается
+                                    // по каналам ещё до выбора канала для сортировки.
+                                    val target = (index + delta).coerceIn(0, ordered.lastIndex)
+                                    if (target != index) {
+                                        focusedIndex = target
+                                        renderRows(target)
+                                    }
+                                    true
+                                } else {
+                                    if (index != focusedIndex) return@setOnKeyListener false
+                                    // Режим перемещения: меняем позицию зафиксированного канала.
+                                    val target = (focusedIndex + delta).coerceIn(0, ordered.lastIndex)
+                                    if (target != focusedIndex) {
+                                        val item = ordered.removeAt(focusedIndex)
+                                        ordered.add(target, item)
+                                        focusedIndex = target
+                                        renderRows(target)
+                                    }
+                                    true
                                 }
-                                true
                             }
                             else -> false
                         }
