@@ -2420,24 +2420,49 @@ class MainActivity : AppCompatActivity() {
         var focusedIndex = 0
         var locked = false
         val rows = mutableListOf<TextView>()
+        val movementStatus = TextView(this).apply {
+            textSize = 16f
+            setTextColor(0xFF7FE0A3.toInt())
+            setPadding(0, dp(20), 0, 0)
+        }
+        right.addView(movementStatus)
         fun renderRows(focusIndex: Int) {
             list.removeAllViews()
             rows.clear()
+            movementStatus.text = if (locked) {
+                "● ПЕРЕМЕЩЕНИЕ ВКЛЮЧЕНО\\n${ordered[focusedIndex].name}\\nПозиция: ${focusedIndex + 1} из ${ordered.size}\\n\\nИспользуйте ↑ / ↓"
+            } else {
+                "● РЕЖИМ ВЫБОРА\\nНажмите ОК на канале, чтобы начать его перемещение."
+            }
             ordered.forEachIndexed { index, channel ->
+                val isMoving = locked && index == focusedIndex
+                val isFocusedRow = index == focusIndex
                 val row = TextView(this).apply {
-                    text = (if (locked && index == focusedIndex) "◆  " else "    ") + channel.name
-                    textSize = 17f
+                    text = when {
+                        isMoving -> "⬆  ПЕРЕМЕЩАЕТСЯ  ⬇\\n${index + 1}. ${channel.name}"
+                        isFocusedRow -> "▶  ${index + 1}. ${channel.name}"
+                        else -> "     ${index + 1}. ${channel.name}"
+                    }
+                    textSize = if (isMoving) 17f else 16f
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(12), dp(8), dp(10), dp(8))
-                    minHeight = dp(52)
+                    minHeight = dp(if (isMoving) 66 else 54)
                     setTextColor(0xFFFFFFFF.toInt())
                     isFocusable = true
                     isFocusableInTouchMode = true
                     background = android.graphics.drawable.GradientDrawable().apply {
                         cornerRadius = dp(8).toFloat()
-                        setColor(if (locked && index == focusedIndex) 0xFF174B36.toInt() else 0xFF1B2635.toInt())
-                        setStroke(dp(if (locked && index == focusedIndex) 3 else 1),
-                            if (locked && index == focusedIndex) currentPalette()[1] else 0xFF34445A.toInt())
+                        setColor(when {
+                            isMoving -> 0xFF075D3A.toInt()
+                            isFocusedRow -> 0xFF24466B.toInt()
+                            else -> 0xFF1B2635.toInt()
+                        })
+                        setStroke(dp(if (isMoving) 4 else if (isFocusedRow) 3 else 1),
+                            when {
+                                isMoving -> 0xFF72FFB0.toInt()
+                                isFocusedRow -> currentPalette()[1]
+                                else -> 0xFF34445A.toInt()
+                            })
                     }
                     setOnClickListener {
                         focusedIndex = index
