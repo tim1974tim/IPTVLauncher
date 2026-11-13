@@ -1014,11 +1014,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         alternativeChannelOverlay = panel
-        root.addView(panel, FrameLayout.LayoutParams(dp(310), -2, Gravity.START or Gravity.CENTER_VERTICAL).apply {
-            leftMargin = dp(12)
-            // Не перекрываем статус-бар: панель размещается с противоположной стороны.
-            if (statusAtTop()) topMargin = dp((176 * statusSizeScale()).toInt() + 12)
-            else bottomMargin = dp((176 * statusSizeScale()).toInt() + 12)
+        root.addView(panel, FrameLayout.LayoutParams(dp(340), -1, Gravity.START or Gravity.TOP).apply {
+            // Слева остаётся узкая вертикальная область статус-бара, список начинается рядом с ней.
+            leftMargin = dp(190)
         })
     }
 
@@ -1037,16 +1035,13 @@ class MainActivity : AppCompatActivity() {
 
         val selectedPosition = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
 
-        // Всегда рисуем ровно девять позиций относительно текущего канала.
-        // Текущий канал находится в пятой строке; у начала/конца категории
-        // свободные позиции остаются пустыми, а индикатор не сдвигается.
-        for (slot in 0 until 9) {
+        // Десять строк равномерно занимают всю высоту экрана.
+        // Пятая строка служит неподвижным индикатором текущего канала.
+        for (slot in 0 until 10) {
             val windowPosition = selectedPosition + slot - 4
             if (windowPosition !in indices.indices) {
                 panel.addView(View(this).apply { isFocusable = false },
-                    LinearLayout.LayoutParams(-1, dp(52)).apply {
-                        bottomMargin = if (slot == 8) 0 else dp(3)
-                    })
+                    LinearLayout.LayoutParams(-1, 0, 1f))
                 continue
             }
 
@@ -1098,16 +1093,38 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(if (isCurrent) 0xFFFFFFFF.toInt() else 0xFFE1E8F0.toInt())
             }
             row.addView(label, LinearLayout.LayoutParams(0, -1, 1f))
-            panel.addView(row, LinearLayout.LayoutParams(-1, dp(52)).apply {
-                bottomMargin = if (slot == 8) 0 else dp(3)
+            panel.addView(row, LinearLayout.LayoutParams(-1, 0, 1f).apply {
+                bottomMargin = if (slot == 9) 0 else dp(3)
             })
         }
         panel.visibility = View.VISIBLE
     }
 
+    private fun applyAlternativeNavigationLayout(enabled: Boolean) {
+        if (!::playbackBar.isInitialized || !::root.isInitialized) return
+        if (enabled) {
+            playbackBar.orientation = LinearLayout.VERTICAL
+            playbackBar.setPadding(dp(8), dp(8), dp(8), dp(8))
+            playbackBar.layoutParams = FrameLayout.LayoutParams(dp(170), -1, Gravity.START or Gravity.TOP).apply {
+                leftMargin = dp(8)
+            }
+            alternativeChannelOverlay?.layoutParams = FrameLayout.LayoutParams(dp(340), -1, Gravity.START or Gravity.TOP).apply {
+                leftMargin = dp(190)
+            }
+        } else {
+            playbackBar.orientation = LinearLayout.VERTICAL
+            playbackBar.setPadding(dp(18), dp(4), dp(18), dp(6))
+            playbackBar.layoutParams = FrameLayout.LayoutParams(-1, dp((176 * statusSizeScale()).toInt()), statusGravity()).apply {
+                if (statusAtTop()) topMargin = dp(28) else bottomMargin = dp(28)
+            }
+            alternativeChannelOverlay?.visibility = View.GONE
+        }
+    }
+
     private fun showAlternativeNavigationForThreeSeconds() {
         if (!alternativeNavigationEnabled() || browserVisible || channels.isEmpty()) return
         updatePlaybackBar()
+        applyAlternativeNavigationLayout(true)
         playbackBar.visibility = View.VISIBLE
         refreshAlternativeChannelOverlay()
         alternativeNavigationVisible = true
@@ -1119,6 +1136,8 @@ class MainActivity : AppCompatActivity() {
     private fun showPlaybackBarForThreeSeconds() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         if (!browserVisible && channels.isNotEmpty()) {
+            if (alternativeNavigationEnabled()) applyAlternativeNavigationLayout(true)
+            else applyAlternativeNavigationLayout(false)
             playbackBar.visibility = View.VISIBLE
             if (alternativeNavigationEnabled()) {
                 refreshAlternativeChannelOverlay()
@@ -2318,7 +2337,7 @@ class MainActivity : AppCompatActivity() {
         settingButton("Альтернативная навигация по каналам: " + if (alternativeNavigationEnabled()) "ВКЛ" else "ВЫКЛ", alternativeNavigationEnabled()) {
             val enabled = !alternativeNavigationEnabled()
             prefs.edit().putBoolean("alternative_channel_navigation", enabled).apply()
-            if (!enabled) { alternativeChannelOverlay?.visibility = View.GONE; alternativeNavigationVisible = false }
+            if (!enabled) { alternativeChannelOverlay?.visibility = View.GONE; alternativeNavigationVisible = false; applyAlternativeNavigationLayout(false) }
             else showAlternativeNavigationForThreeSeconds()
             toast(if (enabled) "Альтернативная навигация включена" else "Альтернативная навигация выключена")
         }
