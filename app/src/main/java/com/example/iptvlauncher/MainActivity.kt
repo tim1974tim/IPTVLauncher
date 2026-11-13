@@ -1641,8 +1641,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun favoriteKey() = "favorites_${activePlaylistSlot}"
+    private fun favoriteOrderKey() = "favorite_order_${activePlaylistSlot}"
     private fun favoriteUrls(): MutableSet<String> = (prefs.getStringSet(favoriteKey(), emptySet()) ?: emptySet()).toMutableSet()
-    private fun favoriteChannels(): List<TvChannel> = allPlaylistChannels.filter { it.url in favoriteUrls() }
+    private fun favoriteChannels(): List<TvChannel> {
+        val favorites = allPlaylistChannels.filter { it.url in favoriteUrls() }
+        val savedOrder = runCatching {
+            val json = JSONArray(prefs.getString(favoriteOrderKey(), "[]") ?: "[]")
+            (0 until json.length()).mapNotNull { json.optString(it).takeIf(String::isNotBlank) }
+        }.getOrDefault(emptyList())
+        val byUrl = favorites.associateBy { it.url }
+        return savedOrder.mapNotNull { byUrl[it] } + favorites.filter { it.url !in savedOrder.toSet() }
+    }
 
     private fun visiblePlaylistChannels(source: List<TvChannel>): List<TvChannel> {
         val hidden = prefs.getStringSet("hidden_groups_${activePlaylistSlot}", if (activePlaylistSlot == 1) prefs.getStringSet("hidden_groups", emptySet()) else emptySet()) ?: emptySet()
@@ -2158,6 +2167,7 @@ class MainActivity : AppCompatActivity() {
             if (source.isNotEmpty()) showCategorySettings(source)
         }
         settingButton("Настройка избранного") { showFavoritesSettings() }
+        settingButton("Сортировка избранного") { showFavoritesSorting() }
         settingButton("Режим видеодекодера") { showDecoderSettings() }
         settingButton("Журнал ошибок и событий") { showDiagnosticLog() }
         settingButton("Открыть настройки приставки") {
@@ -2352,6 +2362,140 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
         dialog.window?.setLayout(-1, -1)
         firstRow?.requestFocus()
+    }
+
+    private fun showFavoritesSorting() {
+        val ordered = favoriteChannels().toMutableList()
+        if (ordered.isEmpty()) {
+            toast("Сначала добавьте каналы в избранное")
+            return
+        }
+
+        val dialog = android.app.Dialog(this)
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            setBackgroundColor(0xFF090D15.toInt())
+        }
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setBackgroundColor(0xFF111925.toInt())
+        }
+        left.addView(TextView(this).apply {
+            text = "СОРТИРОВКА ИЗБРАННОГО"
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(8), dp(8), dp(8), dp(14))
+        })
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(list)
+        }
+        left.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val right = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.TOP
+            setPadding(dp(20), dp(18), dp(12), dp(12))
+            setBackgroundColor(0xFF151E2B.toInt())
+        }
+        right.addView(TextView(this@MainActivity).apply {
+            text = "КАК ПОЛЬЗОВАТЬСЯ"
+            textSize = 19f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 0, 0, dp(18))
+        })
+        right.addView(TextView(this@MainActivity).apply {
+            text = "ОК — зафиксировать канал\\n\\nВВЕРХ / ВНИЗ — переместить зафиксированный канал\\n\\nОК — снять фиксацию\\n\\nНАЗАД — сохранить порядок и выйти"
+            textSize = 17f
+            setTextColor(0xFFD5DFEC.toInt())
+            setLineSpacing(dp(3).toFloat(), 1f)
+        })
+        screen.addView(left, LinearLayout.LayoutParams(0, -1, 0.58f).apply { rightMargin = dp(12) })
+        screen.addView(right, LinearLayout.LayoutParams(0, -1, 0.42f))
+
+        var focusedIndex = 0
+        var locked = false
+        val rows = mutableListOf<TextView>()
+        fun renderRows(focusIndex: Int) {
+            list.removeAllViews()
+            rows.clear()
+            ordered.forEachIndexed { index, channel ->
+                val row = TextView(this).apply {
+                    text = (if (locked && index == focusedIndex) "◆  " else "    ") + channel.name
+                    textSize = 17f
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(8), dp(10), dp(8))
+                    minHeight = dp(52)
+                    setTextColor(0xFFFFFFFF.toInt())
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        cornerRadius = dp(8).toFloat()
+                        setColor(if (locked && index == focusedIndex) 0xFF174B36.toInt() else 0xFF1B2635.toInt())
+                        setStroke(dp(if (locked && index == focusedIndex) 3 else 1),
+                            if (locked && index == focusedIndex) currentPalette()[1] else 0xFF34445A.toInt())
+                    }
+                    setOnClickListener {
+                        focusedIndex = index
+                        locked = !locked
+                        renderRows(index)
+                    }
+                    setOnKeyListener { _, keyCode, event ->
+                        if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                        when (keyCode) {
+                            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                                focusedIndex = index
+                                locked = !locked
+                                renderRows(index)
+                                true
+                            }
+                            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                                if (!locked || index != focusedIndex) return@setOnKeyListener false
+                                val delta = if (keyCode == KeyEvent.KEYCODE_DPAD_UP) -1 else 1
+                                val target = (focusedIndex + delta).coerceIn(0, ordered.lastIndex)
+                                if (target != focusedIndex) {
+                                    val item = ordered.removeAt(focusedIndex)
+                                    ordered.add(target, item)
+                                    focusedIndex = target
+                                    renderRows(target)
+                                }
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                }
+                rows.add(row)
+                list.addView(row)
+            }
+            rows.getOrNull(focusIndex.coerceIn(0, rows.lastIndex))?.requestFocus()
+        }
+        renderRows(0)
+
+        dialog.setContentView(screen)
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                val json = JSONArray()
+                ordered.forEach { json.put(it.url) }
+                prefs.edit().putString(favoriteOrderKey(), json.toString()).apply()
+                dialog.dismiss()
+                true
+            } else false
+        }
+        dialog.setOnDismissListener {
+            val json = JSONArray()
+            ordered.forEach { json.put(it.url) }
+            prefs.edit().putString(favoriteOrderKey(), json.toString()).apply()
+        }
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.show()
+        dialog.window?.setLayout(-1, -1)
+        rows.firstOrNull()?.requestFocus()
     }
 
     private fun showCategorySettings(source: List<TvChannel>) {
