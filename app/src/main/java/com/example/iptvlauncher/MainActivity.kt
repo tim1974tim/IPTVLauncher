@@ -1591,7 +1591,9 @@ class MainActivity : AppCompatActivity() {
                 return super.dispatchKeyEvent(event)
             }
             if (browserVisible) {
-                val visible = channels.indices.filter { if (groups[groupIndex] == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == groups[groupIndex] }
+                // Навигация в списке должна использовать тот же порядок индексов,
+                // что и отрисовка списка (включая пользовательскую сортировку избранного).
+                val visible = channelIndicesByGroup[groups.getOrNull(groupIndex)].orEmpty()
                 if (visible.isNotEmpty()) {
                     val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
                     when (keyCode) {
