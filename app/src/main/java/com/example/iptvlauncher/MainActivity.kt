@@ -1016,11 +1016,12 @@ class MainActivity : AppCompatActivity() {
         }
         if (epgRequestInProgress) return
         epgRequestInProgress = true
-        epgLoading = true
+        // Локальная проверка кэша выполняется тихо: индикатор показываем
+        // только если после проверки действительно потребуется сеть/разбор.
+        epgLoading = false
         epgProgress = 0
-        epgProgressText = "Проверка сохранённой телепрограммы…"
+        epgProgressText = ""
         statusHandler.removeCallbacks(hideStatusRunnable)
-        if (::playbackBar.isInitialized) playbackBar.visibility = View.VISIBLE
         updatePlaybackBar()
 
         thread(name = "epg-cache-check") {
