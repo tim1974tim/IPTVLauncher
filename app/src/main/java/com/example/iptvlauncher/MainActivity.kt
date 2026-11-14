@@ -69,6 +69,11 @@ class MainActivity : AppCompatActivity() {
             playbackBar.visibility = View.GONE
             alternativeChannelOverlay?.visibility = View.GONE
             alternativeNavigationVisible = false
+            // После скрытия боковой панели обязательно возвращаем PlayerView
+            // из правого окна на весь экран.
+            if (alternativeNavigationEnabled()) {
+                applyAlternativeNavigationLayout(false)
+            }
         }
     }
     private lateinit var urlInput: EditText
@@ -933,10 +938,10 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        categoryColumn.addView(statusText(category, 28f * statusSizeScale()).apply {
+        categoryColumn.addView(statusText(category, (if (alternativeNavigationEnabled()) 20f else 28f) * statusSizeScale()).apply {
             setTextColor(currentPalette()[1])
         })
-        categoryColumn.addView(statusText("Канал ${position + 1} из ${inGroup.size}", 24f * statusSizeScale()).apply {
+        categoryColumn.addView(statusText("Канал ${position + 1} из ${inGroup.size}", (if (alternativeNavigationEnabled()) 16f else 24f) * statusSizeScale()).apply {
             setTextColor(0xFFB8C0CC.toInt())
         })
         row.addView(categoryColumn, LinearLayout.LayoutParams(dp(250), -1))
@@ -966,7 +971,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
         }
-        details.addView(statusText(channel.name, 36f * statusSizeScale()).apply {
+        details.addView(statusText(channel.name, (if (alternativeNavigationEnabled()) 24f else 36f) * statusSizeScale()).apply {
             maxLines = 1
             setTextColor(currentPalette()[0])
         })
@@ -977,11 +982,12 @@ class MainActivity : AppCompatActivity() {
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
         }
-        details.addView(statusText(programmeText, 28f * statusSizeScale()).apply {
+        details.addView(statusText(programmeText, (if (alternativeNavigationEnabled()) 18f else 28f) * statusSizeScale()).apply {
             setTextColor(0xFFD0D5DE.toInt())
-            maxLines = 2
+            maxLines = if (alternativeNavigationEnabled()) 2 else 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
         })
-        row.addView(details, LinearLayout.LayoutParams(0, dp((132 * statusSizeScale()).toInt()), 1f))
+        row.addView(details, LinearLayout.LayoutParams(0, dp((112 * statusSizeScale()).toInt()), 1f))
         playbackBar.addView(row, LinearLayout.LayoutParams(-1, 0, 1f))
 
         if (isChannelBuffering || epgLoading) {
@@ -1115,7 +1121,7 @@ class MainActivity : AppCompatActivity() {
                 leftMargin = dp(430)
                 topMargin = dp(8)
                 rightMargin = dp(12)
-                bottomMargin = dp(150)
+                bottomMargin = dp(166)
                 width = -1
                 height = -1
             }
@@ -1127,7 +1133,7 @@ class MainActivity : AppCompatActivity() {
             }
             playbackBar.orientation = LinearLayout.VERTICAL
             playbackBar.setPadding(dp(10), dp(6), dp(10), dp(6))
-            playbackBar.layoutParams = FrameLayout.LayoutParams(0, dp(132), Gravity.BOTTOM or Gravity.END).apply {
+            playbackBar.layoutParams = FrameLayout.LayoutParams(0, dp(148), Gravity.BOTTOM or Gravity.END).apply {
                 leftMargin = dp(430)
                 rightMargin = dp(12)
                 bottomMargin = dp(8)
