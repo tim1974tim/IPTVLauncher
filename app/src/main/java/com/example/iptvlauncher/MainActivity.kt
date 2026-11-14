@@ -1025,13 +1025,28 @@ class MainActivity : AppCompatActivity() {
 
         thread(name = "epg-cache-check") {
             val cacheFile = java.io.File(filesDir, "epg_cache.xmltv")
-            val cachedUrl = prefs.getString("epg_cached_url", null)
+            // Метаданные рядом с XMLTV — резервный источник даты и URL кэша.
+            // SharedPreferences могут не успеть завершить асинхронную запись при выключении приставки.
+            val metadataFile = java.io.File(filesDir, "epg_cache.meta")
+            val cacheMetadata = runCatching {
+                java.io.DataInputStream(java.io.BufferedInputStream(metadataFile.inputStream())).use { input ->
+                    if (input.readInt() != 0x4550474D) throw java.io.IOException("Некорректные метаданные EPG")
+                    input.readUTF() to input.readLong()
+                }
+            }.getOrNull()
+            val preferenceUrl = prefs.getString("epg_cached_url", null)
+            val cachedUrl = cacheMetadata?.first ?: preferenceUrl
             val cacheExists = cacheFile.exists() && cacheFile.length() > 0L && cachedUrl == url
             val intervalHours = epgIntervalHours(activePlaylistSlot)
-            val lastUpdate = prefs.getLong("epg_updated_at", 0L)
+            val preferenceUpdate = prefs.getLong("epg_updated_at", 0L)
+            val lastUpdate = cacheMetadata?.second?.takeIf { it > 0L }
+                ?: preferenceUpdate.takeIf { it > 0L }
+                ?: cacheFile.lastModified()
             val intervalMs = intervalHours * 60L * 60L * 1000L
             val isFresh = cacheExists && lastUpdate > 0L &&
                 System.currentTimeMillis() - lastUpdate < intervalMs
+            val cacheAgeHours = if (lastUpdate > 0L) (System.currentTimeMillis() - lastUpdate) / 3_600_000L else -1L
+            logEvent("Проверка кэша EPG: файл=${cacheFile.exists()}, URL совпадает=${cachedUrl == url}, дата=$lastUpdate, возраст_ч=${cacheAgeHours}, интервал_ч=$intervalHours, актуален=$isFresh")
 
             // Сначала читаем локальную копию: телепрограмма доступна даже без интернета.
             if (cacheExists) {
@@ -1144,8 +1159,22 @@ class MainActivity : AppCompatActivity() {
                 val byId = programmes.groupBy { it.channelId.lowercase(Locale.ROOT) }
                 val byName = programmes.flatMap { p -> p.channelNames.map { normalizeEpgName(it) to p } }
                     .groupBy({ it.first }, { it.second })
+                val completedAt = System.currentTimeMillis()
+                // Сначала атомарно сохраняем метаданные вместе с кэшем, затем синхронно
+                // фиксируем их в SharedPreferences. На следующем старте дата не потеряется.
+                val metadataTemp = java.io.File(filesDir, "epg_cache.meta.tmp")
+                java.io.DataOutputStream(java.io.BufferedOutputStream(metadataTemp.outputStream())).use { output ->
+                    output.writeInt(0x4550474D) // EPGM
+                    output.writeUTF(url)
+                    output.writeLong(completedAt)
+                }
+                val metadataFile = java.io.File(filesDir, "epg_cache.meta")
+                if (!metadataTemp.renameTo(metadataFile)) {
+                    metadataTemp.copyTo(metadataFile, overwrite = true)
+                    metadataTemp.delete()
+                }
                 prefs.edit().putString("epg_cached_url", url)
-                    .putLong("epg_updated_at", System.currentTimeMillis()).apply()
+                    .putLong("epg_updated_at", completedAt).commit()
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     epgProgrammes = programmes
@@ -1297,30 +1326,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildChannelIndex() {
         val favorites = favoriteUrls()
-
-        // Порядок избранного хранится отдельно от порядка каналов в M3U.
-        // При каждом построении индексов применяем сохранённый порядок,
-        // иначе после повторной загрузки плейлиста каналы снова идут как в M3U.
-        val favoriteOrder = runCatching {
-            val json = JSONArray(prefs.getString(favoriteOrderKey(), "[]") ?: "[]")
-            (0 until json.length())
-                .mapNotNull { json.optString(it).takeIf(String::isNotBlank) }
-        }.getOrDefault(emptyList())
-        val favoritePositions = favoriteOrder.withIndex().associate { it.value to it.index }
-
         channelIndicesByGroup = groups.associateWith { category ->
-            val indices = channels.indices.filter { index ->
+            channels.indices.filter { index ->
                 val channel = channels[index]
                 if (category == "Избранное") channel.url in favorites else channel.group == category
-            }
-            if (category == "Избранное") {
-                // Каналы, добавленные после последнего сохранения сортировки,
-                // остаются в конце в исходном порядке плейлиста.
-                indices.sortedBy { index ->
-                    favoritePositions[channels[index].url] ?: Int.MAX_VALUE
-                }
-            } else {
-                indices
             }
         }
     }
