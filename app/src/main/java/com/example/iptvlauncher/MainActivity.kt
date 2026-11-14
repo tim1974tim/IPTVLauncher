@@ -2204,6 +2204,14 @@ class MainActivity : AppCompatActivity() {
         settingButton("Создать резервную копию настроек (JSON)") { createSettingsBackup() }
         settingButton("Восстановить настройки из копии") { chooseBackupToRestore() }
 
+        section("РЕЖИМ ЛАУНЧЕРА")
+        settingButton("Лаунчер ВКЛ — выбрать IPTV Launcher") {
+            openHomeLauncherSettings("Выберите IPTV Launcher в списке приложений главного экрана.")
+        }
+        settingButton("Лаунчер ВЫКЛ — вернуть родной экран") {
+            openHomeLauncherSettings("Выберите родной лаунчер приставки, чтобы вернуть стандартный главный экран.")
+        }
+
         section("ДОПОЛНИТЕЛЬНО")
         settingButton("Обновить EPG вручную") {
             loadEpgIfConfigured(force = true)
@@ -2715,6 +2723,24 @@ class MainActivity : AppCompatActivity() {
         minHeight = dp(54); setTextColor(-1)
         setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
         setOnClickListener { action() }
+    }
+
+    private fun openHomeLauncherSettings(instruction: String) {
+        Toast.makeText(this, instruction, Toast.LENGTH_LONG).show()
+        val actions = listOf(
+            android.provider.Settings.ACTION_HOME_SETTINGS,
+            android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+            android.provider.Settings.ACTION_SETTINGS
+        )
+        for (action in actions) {
+            try {
+                startActivity(Intent(action))
+                return
+            } catch (_: Exception) {
+                // На некоторых прошивках Android TV отдельный экран выбора HOME отсутствует.
+            }
+        }
+        Toast.makeText(this, "Не удалось открыть настройки главного экрана. Откройте их вручную в настройках приставки.", Toast.LENGTH_LONG).show()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
