@@ -1297,10 +1297,30 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildChannelIndex() {
         val favorites = favoriteUrls()
+
+        // Порядок избранного хранится отдельно от порядка каналов в M3U.
+        // При каждом построении индексов применяем сохранённый порядок,
+        // иначе после повторной загрузки плейлиста каналы снова идут как в M3U.
+        val favoriteOrder = runCatching {
+            val json = JSONArray(prefs.getString(favoriteOrderKey(), "[]") ?: "[]")
+            (0 until json.length())
+                .mapNotNull { json.optString(it).takeIf(String::isNotBlank) }
+        }.getOrDefault(emptyList())
+        val favoritePositions = favoriteOrder.withIndex().associate { it.value to it.index }
+
         channelIndicesByGroup = groups.associateWith { category ->
-            channels.indices.filter { index ->
+            val indices = channels.indices.filter { index ->
                 val channel = channels[index]
                 if (category == "Избранное") channel.url in favorites else channel.group == category
+            }
+            if (category == "Избранное") {
+                // Каналы, добавленные после последнего сохранения сортировки,
+                // остаются в конце в исходном порядке плейлиста.
+                indices.sortedBy { index ->
+                    favoritePositions[channels[index].url] ?: Int.MAX_VALUE
+                }
+            } else {
+                indices
             }
         }
     }
