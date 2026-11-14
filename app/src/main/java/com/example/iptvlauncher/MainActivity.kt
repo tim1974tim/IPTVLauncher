@@ -39,6 +39,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var programmeDetails: LinearLayout
     private lateinit var playbackBar: LinearLayout
     private var alternativeChannelOverlay: LinearLayout? = null
+    private var alternativeVideoFrame: FrameLayout? = null
+    private val alternativeChannelRows = mutableListOf<LinearLayout>()
+    private val alternativeChannelLabels = mutableListOf<TextView>()
+    private val alternativeChannelLogos = mutableListOf<ImageView>()
     private var alternativeNavigationVisible = false
     private val statusHandler = Handler(Looper.getMainLooper())
     private var okLongPressTriggered = false
@@ -1006,7 +1010,7 @@ class MainActivity : AppCompatActivity() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setPadding(dp(8), dp(6), dp(8), dp(6))
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(0xD9101722.toInt())
                 cornerRadius = dp(12).toFloat()
@@ -1014,104 +1018,126 @@ class MainActivity : AppCompatActivity() {
             }
         }
         alternativeChannelOverlay = panel
-        root.addView(panel, FrameLayout.LayoutParams(dp(340), -1, Gravity.START or Gravity.TOP).apply {
-            // Слева остаётся узкая вертикальная область статус-бара, список начинается рядом с ней.
-            leftMargin = dp(190)
-        })
+        repeat(10) { slot ->
+            val logo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+            val label = TextView(this).apply {
+                textSize = 14f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_VERTICAL
+                setTextColor(0xFFE1E8F0.toInt())
+            }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(7), dp(3), dp(7), dp(3))
+                addView(logo, LinearLayout.LayoutParams(dp(38), dp(38)).apply { rightMargin = dp(8) })
+                addView(label, LinearLayout.LayoutParams(0, -1, 1f))
+            }
+            panel.addView(row, LinearLayout.LayoutParams(-1, 0, 1f).apply {
+                bottomMargin = if (slot == 9) 0 else dp(3)
+            })
+            alternativeChannelRows.add(row)
+            alternativeChannelLabels.add(label)
+            alternativeChannelLogos.add(logo)
+        }
+        root.addView(panel, FrameLayout.LayoutParams(dp(420), -1, Gravity.START or Gravity.TOP))
     }
 
     private fun refreshAlternativeChannelOverlay() {
         if (!alternativeNavigationEnabled() || channels.isEmpty()) return
         ensureAlternativeChannelOverlay()
         val panel = alternativeChannelOverlay ?: return
-        panel.removeAllViews()
-
         val category = groups.getOrNull(groupIndex) ?: return
         val indices = channelIndicesByGroup[category].orEmpty()
-        if (indices.isEmpty()) {
-            panel.visibility = View.GONE
-            return
-        }
-
         val selectedPosition = indices.indexOf(selectedChannel).let { if (it < 0) 0 else it }
 
-        // Десять строк равномерно занимают всю высоту экрана.
-        // Пятая строка служит неподвижным индикатором текущего канала.
         for (slot in 0 until 10) {
+            val row = alternativeChannelRows[slot]
+            val label = alternativeChannelLabels[slot]
+            val logo = alternativeChannelLogos[slot]
             val windowPosition = selectedPosition + slot - 4
             if (windowPosition !in indices.indices) {
-                panel.addView(View(this).apply { isFocusable = false },
-                    LinearLayout.LayoutParams(-1, 0, 1f))
+                row.visibility = View.INVISIBLE
+                logo.setImageDrawable(null)
+                logo.tag = null
+                label.text = ""
                 continue
             }
-
-            val channelIndex = indices[windowPosition]
-            val channel = channels[channelIndex]
-            val isCurrent = channelIndex == selectedChannel
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(3), dp(8), dp(3))
-                background = if (isCurrent) {
-                    android.graphics.drawable.GradientDrawable().apply {
-                        setColor(0xFF174F83.toInt())
-                        cornerRadius = dp(7).toFloat()
-                        setStroke(dp(2), 0xFF62B6FF.toInt())
-                    }
-                } else {
-                    android.graphics.drawable.GradientDrawable().apply {
-                        setColor(0x55202B39)
-                        cornerRadius = dp(7).toFloat()
+            val channel = channels[indices[windowPosition]]
+            val isCurrent = indices[windowPosition] == selectedChannel
+            row.visibility = View.VISIBLE
+            row.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (isCurrent) 0xFF174F83.toInt() else 0x55202B39)
+                cornerRadius = dp(7).toFloat()
+                if (isCurrent) setStroke(dp(2), 0xFF62B6FF.toInt())
+            }
+            label.text = channel.name
+            label.setTypeface(null, if (isCurrent) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+            label.setTextColor(if (isCurrent) 0xFFFFFFFF.toInt() else 0xFFE1E8F0.toInt())
+            if (logo.tag != channel.logo) {
+                logo.tag = channel.logo
+                logo.setImageDrawable(null)
+                val logoUrl = channel.logo
+                if (!logoUrl.isNullOrBlank()) {
+                    thread(name = "alt-channel-logo") {
+                        try {
+                            val bitmap = OkHttpClient().newCall(Request.Builder().url(logoUrl).build()).execute().use { response ->
+                                if (!response.isSuccessful) null else response.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
+                            }
+                            if (bitmap != null) runOnUiThread {
+                                if (logo.tag == logoUrl && !isFinishing && !isDestroyed) logo.setImageBitmap(bitmap)
+                            }
+                        } catch (_: Exception) { }
                     }
                 }
             }
-            val logo = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                contentDescription = "Логотип ${channel.name}"
-            }
-            row.addView(logo, LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(9) })
-            if (!channel.logo.isNullOrBlank()) {
-                val logoUrl = channel.logo!!
-                logo.tag = logoUrl
-                thread(name = "alt-channel-logo") {
-                    try {
-                        val bitmap = OkHttpClient().newCall(Request.Builder().url(logoUrl).build()).execute().use { response ->
-                            if (!response.isSuccessful) null else response.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
-                        }
-                        if (bitmap != null) runOnUiThread {
-                            if (logo.tag == logoUrl && !isFinishing && !isDestroyed) logo.setImageBitmap(bitmap)
-                        }
-                    } catch (_: Exception) { }
-                }
-            }
-            val label = TextView(this).apply {
-                text = channel.name
-                textSize = 14f
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTypeface(null, if (isCurrent) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-                setTextColor(if (isCurrent) 0xFFFFFFFF.toInt() else 0xFFE1E8F0.toInt())
-            }
-            row.addView(label, LinearLayout.LayoutParams(0, -1, 1f))
-            panel.addView(row, LinearLayout.LayoutParams(-1, 0, 1f).apply {
-                bottomMargin = if (slot == 9) 0 else dp(3)
-            })
         }
         panel.visibility = View.VISIBLE
     }
 
     private fun applyAlternativeNavigationLayout(enabled: Boolean) {
-        if (!::playbackBar.isInitialized || !::root.isInitialized) return
+        if (!::playbackBar.isInitialized || !::root.isInitialized || !::playerView.isInitialized) return
         if (enabled) {
-            playbackBar.orientation = LinearLayout.VERTICAL
-            playbackBar.setPadding(dp(8), dp(8), dp(8), dp(8))
-            playbackBar.layoutParams = FrameLayout.LayoutParams(dp(170), -1, Gravity.START or Gravity.TOP).apply {
+            var videoFrame = alternativeVideoFrame
+            if (videoFrame == null) {
+                videoFrame = FrameLayout(this).apply {
+                    setBackgroundColor(0xFF000000.toInt())
+                }
+                alternativeVideoFrame = videoFrame
+            }
+            if (playerView.parent !== videoFrame) {
+                (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
+                videoFrame.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+            }
+            if (videoFrame.parent !== root) root.addView(videoFrame, 0)
+            videoFrame.layoutParams = FrameLayout.LayoutParams(0, 0, Gravity.TOP or Gravity.END).apply {
+                leftMargin = dp(430)
+                topMargin = dp(8)
+                rightMargin = dp(12)
+                bottomMargin = dp(150)
+                width = -1
+                height = -1
+            }
+            // Список занимает всю высоту слева, эфир — отдельное окно справа.
+            alternativeChannelOverlay?.layoutParams = FrameLayout.LayoutParams(dp(410), -1, Gravity.START or Gravity.TOP).apply {
                 leftMargin = dp(8)
+                topMargin = dp(8)
+                bottomMargin = dp(8)
             }
-            alternativeChannelOverlay?.layoutParams = FrameLayout.LayoutParams(dp(340), -1, Gravity.START or Gravity.TOP).apply {
-                leftMargin = dp(190)
+            playbackBar.orientation = LinearLayout.VERTICAL
+            playbackBar.setPadding(dp(10), dp(6), dp(10), dp(6))
+            playbackBar.layoutParams = FrameLayout.LayoutParams(0, dp(132), Gravity.BOTTOM or Gravity.END).apply {
+                leftMargin = dp(430)
+                rightMargin = dp(12)
+                bottomMargin = dp(8)
+                width = -1
             }
+            playbackBar.setBackgroundColor(statusBackgroundColor())
         } else {
+            (playerView.parent as? android.view.ViewGroup)?.removeView(playerView)
+            (alternativeVideoFrame?.parent as? android.view.ViewGroup)?.removeView(alternativeVideoFrame)
+            root.addView(playerView, 0, FrameLayout.LayoutParams(-1, -1))
             playbackBar.orientation = LinearLayout.VERTICAL
             playbackBar.setPadding(dp(18), dp(4), dp(18), dp(6))
             playbackBar.layoutParams = FrameLayout.LayoutParams(-1, dp((176 * statusSizeScale()).toInt()), statusGravity()).apply {
@@ -1124,6 +1150,7 @@ class MainActivity : AppCompatActivity() {
     private fun showAlternativeNavigationForThreeSeconds() {
         if (!alternativeNavigationEnabled() || browserVisible || channels.isEmpty()) return
         updatePlaybackBar()
+        ensureAlternativeChannelOverlay()
         applyAlternativeNavigationLayout(true)
         playbackBar.visibility = View.VISIBLE
         refreshAlternativeChannelOverlay()
@@ -1136,7 +1163,7 @@ class MainActivity : AppCompatActivity() {
     private fun showPlaybackBarForThreeSeconds() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         if (!browserVisible && channels.isNotEmpty()) {
-            if (alternativeNavigationEnabled()) applyAlternativeNavigationLayout(true)
+            if (alternativeNavigationEnabled()) { ensureAlternativeChannelOverlay(); applyAlternativeNavigationLayout(true) }
             else applyAlternativeNavigationLayout(false)
             playbackBar.visibility = View.VISIBLE
             if (alternativeNavigationEnabled()) {
