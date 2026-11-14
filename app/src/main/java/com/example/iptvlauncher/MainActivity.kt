@@ -966,6 +966,7 @@ class MainActivity : AppCompatActivity() {
         val programmeText = when {
             isChannelBuffering -> "Загрузка канала…"
             epgLoading -> "${epgProgressText.ifBlank { "Загрузка телепрограммы" }}"
+            epgRequestInProgress -> "Загрузка телепрограммы…"
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
         }
@@ -1327,10 +1328,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildChannelIndex() {
         val favorites = favoriteUrls()
+        // Индексы обычных категорий сохраняют порядок плейлиста,
+        // а «Избранное» строится строго по сохранённой пользовательской сортировке.
+        val channelIndexByUrl = channels.withIndex().associate { it.value.url to it.index }
+        val favoriteIndices = favoriteChannels()
+            .mapNotNull { channelIndexByUrl[it.url] }
         channelIndicesByGroup = groups.associateWith { category ->
-            channels.indices.filter { index ->
-                val channel = channels[index]
-                if (category == "Избранное") channel.url in favorites else channel.group == category
+            if (category == "Избранное") {
+                favoriteIndices
+            } else {
+                channels.indices.filter { index -> channels[index].group == category }
             }
         }
     }
