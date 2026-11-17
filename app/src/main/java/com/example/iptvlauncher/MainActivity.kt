@@ -1472,7 +1472,8 @@ class MainActivity : AppCompatActivity() {
                     if (okLongPressTriggered) { okLongPressTriggered = false; return true }
                     if (!prefs.getBoolean("back_opens_browser", true)) {
                         updatePlaybackBar()
-                                }
+                        showPlaybackBarForConfiguredDuration()
+                    }
                     return true
                 }
             }
@@ -1543,10 +1544,11 @@ class MainActivity : AppCompatActivity() {
                         showBrowser()
                         return true
                     } else {
-                        // При выключенной опции BACK не закрывает приложение:
-                        // показываем статус-бар поверх эфира на 3 секунды.
+                        // При выключенной опции BACK показывает статус-бар
+                        // на выбранное в настройках время (3, 5 или 7 секунд).
                         updatePlaybackBar()
-                                    return true
+                        showPlaybackBarForConfiguredDuration()
+                        return true
                     }
                 }
                 return super.dispatchKeyEvent(event)
@@ -2714,8 +2716,10 @@ class MainActivity : AppCompatActivity() {
         } else if (channels.isNotEmpty() && prefs.getBoolean("back_opens_browser", true)) {
             showBrowser()
         } else if (channels.isNotEmpty()) {
-            // При выключенной опции BACK оставляет эфир и показывает статус-бар 3 секунды.
+            // При выключенной опции BACK оставляет эфир и показывает статус-бар
+            // на выбранное в настройках время (3, 5 или 7 секунд).
             updatePlaybackBar()
+            showPlaybackBarForConfiguredDuration()
         } else {
             super.onBackPressed()
         }
