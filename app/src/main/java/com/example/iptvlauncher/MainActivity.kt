@@ -966,7 +966,6 @@ class MainActivity : AppCompatActivity() {
         val programmeText = when {
             isChannelBuffering -> "Загрузка канала…"
             epgLoading -> "${epgProgressText.ifBlank { "Загрузка телепрограммы" }}"
-            epgRequestInProgress -> "Загрузка телепрограммы…"
             programme != null -> "${programme.title}  ${programme.timeRange()}"
             else -> "Телепрограмма недоступна"
         }
@@ -1017,38 +1016,22 @@ class MainActivity : AppCompatActivity() {
         }
         if (epgRequestInProgress) return
         epgRequestInProgress = true
-        // Локальная проверка кэша выполняется тихо: индикатор показываем
-        // только если после проверки действительно потребуется сеть/разбор.
-        epgLoading = false
+        epgLoading = true
         epgProgress = 0
-        epgProgressText = ""
+        epgProgressText = "Проверка сохранённой телепрограммы…"
         statusHandler.removeCallbacks(hideStatusRunnable)
+        if (::playbackBar.isInitialized) playbackBar.visibility = View.VISIBLE
         updatePlaybackBar()
 
         thread(name = "epg-cache-check") {
             val cacheFile = java.io.File(filesDir, "epg_cache.xmltv")
-            // Метаданные рядом с XMLTV — резервный источник даты и URL кэша.
-            // SharedPreferences могут не успеть завершить асинхронную запись при выключении приставки.
-            val metadataFile = java.io.File(filesDir, "epg_cache.meta")
-            val cacheMetadata = runCatching {
-                java.io.DataInputStream(java.io.BufferedInputStream(metadataFile.inputStream())).use { input ->
-                    if (input.readInt() != 0x4550474D) throw java.io.IOException("Некорректные метаданные EPG")
-                    input.readUTF() to input.readLong()
-                }
-            }.getOrNull()
-            val preferenceUrl = prefs.getString("epg_cached_url", null)
-            val cachedUrl = cacheMetadata?.first ?: preferenceUrl
+            val cachedUrl = prefs.getString("epg_cached_url", null)
             val cacheExists = cacheFile.exists() && cacheFile.length() > 0L && cachedUrl == url
             val intervalHours = epgIntervalHours(activePlaylistSlot)
-            val preferenceUpdate = prefs.getLong("epg_updated_at", 0L)
-            val lastUpdate = cacheMetadata?.second?.takeIf { it > 0L }
-                ?: preferenceUpdate.takeIf { it > 0L }
-                ?: cacheFile.lastModified()
+            val lastUpdate = prefs.getLong("epg_updated_at", 0L)
             val intervalMs = intervalHours * 60L * 60L * 1000L
             val isFresh = cacheExists && lastUpdate > 0L &&
                 System.currentTimeMillis() - lastUpdate < intervalMs
-            val cacheAgeHours = if (lastUpdate > 0L) (System.currentTimeMillis() - lastUpdate) / 3_600_000L else -1L
-            logEvent("Проверка кэша EPG: файл=${cacheFile.exists()}, URL совпадает=${cachedUrl == url}, дата=$lastUpdate, возраст_ч=${cacheAgeHours}, интервал_ч=$intervalHours, актуален=$isFresh")
 
             // Сначала читаем локальную копию: телепрограмма доступна даже без интернета.
             if (cacheExists) {
@@ -1161,22 +1144,8 @@ class MainActivity : AppCompatActivity() {
                 val byId = programmes.groupBy { it.channelId.lowercase(Locale.ROOT) }
                 val byName = programmes.flatMap { p -> p.channelNames.map { normalizeEpgName(it) to p } }
                     .groupBy({ it.first }, { it.second })
-                val completedAt = System.currentTimeMillis()
-                // Сначала атомарно сохраняем метаданные вместе с кэшем, затем синхронно
-                // фиксируем их в SharedPreferences. На следующем старте дата не потеряется.
-                val metadataTemp = java.io.File(filesDir, "epg_cache.meta.tmp")
-                java.io.DataOutputStream(java.io.BufferedOutputStream(metadataTemp.outputStream())).use { output ->
-                    output.writeInt(0x4550474D) // EPGM
-                    output.writeUTF(url)
-                    output.writeLong(completedAt)
-                }
-                val metadataFile = java.io.File(filesDir, "epg_cache.meta")
-                if (!metadataTemp.renameTo(metadataFile)) {
-                    metadataTemp.copyTo(metadataFile, overwrite = true)
-                    metadataTemp.delete()
-                }
                 prefs.edit().putString("epg_cached_url", url)
-                    .putLong("epg_updated_at", completedAt).commit()
+                    .putLong("epg_updated_at", System.currentTimeMillis()).apply()
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     epgProgrammes = programmes
@@ -1328,16 +1297,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildChannelIndex() {
         val favorites = favoriteUrls()
-        // Индексы обычных категорий сохраняют порядок плейлиста,
-        // а «Избранное» строится строго по сохранённой пользовательской сортировке.
-        val channelIndexByUrl = channels.withIndex().associate { it.value.url to it.index }
-        val favoriteIndices = favoriteChannels()
-            .mapNotNull { channelIndexByUrl[it.url] }
         channelIndicesByGroup = groups.associateWith { category ->
-            if (category == "Избранное") {
-                favoriteIndices
-            } else {
-                channels.indices.filter { index -> channels[index].group == category }
+            channels.indices.filter { index ->
+                val channel = channels[index]
+                if (category == "Избранное") channel.url in favorites else channel.group == category
             }
         }
     }
@@ -1591,9 +1554,7 @@ class MainActivity : AppCompatActivity() {
                 return super.dispatchKeyEvent(event)
             }
             if (browserVisible) {
-                // Навигация в списке должна использовать тот же порядок индексов,
-                // что и отрисовка списка (включая пользовательскую сортировку избранного).
-                val visible = channelIndicesByGroup[groups.getOrNull(groupIndex)].orEmpty()
+                val visible = channels.indices.filter { if (groups[groupIndex] == "Избранное") channels[it].url in favoriteUrls() else channels[it].group == groups[groupIndex] }
                 if (visible.isNotEmpty()) {
                     val position = visible.indexOf(selectedChannel).coerceAtLeast(0)
                     when (keyCode) {
@@ -1682,14 +1643,6 @@ class MainActivity : AppCompatActivity() {
     private fun favoriteKey() = "favorites_${activePlaylistSlot}"
     private fun favoriteOrderKey() = "favorite_order_${activePlaylistSlot}"
     private fun favoriteUrls(): MutableSet<String> = (prefs.getStringSet(favoriteKey(), emptySet()) ?: emptySet()).toMutableSet()
-
-    // Сохраняем порядок избранного сразу на диск, чтобы он не терялся
-    // при принудительном закрытии приложения или завершении процесса Android.
-    private fun saveFavoriteOrder(channels: List<TvChannel>) {
-        val json = JSONArray()
-        channels.forEach { json.put(it.url) }
-        prefs.edit().putString(favoriteOrderKey(), json.toString()).commit()
-    }
     private fun favoriteChannels(): List<TvChannel> {
         val favorites = allPlaylistChannels.filter { it.url in favoriteUrls() }
         val savedOrder = runCatching {
@@ -2204,14 +2157,6 @@ class MainActivity : AppCompatActivity() {
         settingButton("Создать резервную копию настроек (JSON)") { createSettingsBackup() }
         settingButton("Восстановить настройки из копии") { chooseBackupToRestore() }
 
-        section("РЕЖИМ ЛАУНЧЕРА")
-        settingButton("Лаунчер ВКЛ — выбрать IPTV Launcher") {
-            openHomeLauncherSettings("Выберите IPTV Launcher в списке приложений главного экрана.")
-        }
-        settingButton("Лаунчер ВЫКЛ — вернуть родной экран") {
-            openHomeLauncherSettings("Выберите родной лаунчер приставки, чтобы вернуть стандартный главный экран.")
-        }
-
         section("ДОПОЛНИТЕЛЬНО")
         settingButton("Обновить EPG вручную") {
             loadEpgIfConfigured(force = true)
@@ -2289,11 +2234,59 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPlaylistSourceEditor(slot: Int) {
-        val url = EditText(this).apply { hint = "Ссылка M3U / M3U8"; setSingleLine(true); setText(prefs.getString("playlist_${slot}_url", if (slot == 1) prefs.getString("playlist_url", "") else "")) }
-        val epg = EditText(this).apply { hint = "Ссылка EPG XMLTV (необязательно)"; setSingleLine(true); setText(prefs.getString("playlist_${slot}_epg", "")) }
-        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)); addView(url); addView(epg) }
-        android.app.AlertDialog.Builder(this).setTitle("Настройка плейлиста $slot").setView(fields)
-            .setNegativeButton("Отмена", null).setPositiveButton("Сохранить") { _, _ ->
+        val url = EditText(this).apply {
+            id = View.generateViewId()
+            hint = "Ссылка M3U / M3U8"
+            setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_NEXT
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setText(prefs.getString("playlist_${slot}_url", if (slot == 1) prefs.getString("playlist_url", "") else ""))
+        }
+        val epg = EditText(this).apply {
+            id = View.generateViewId()
+            hint = "Ссылка EPG XMLTV (необязательно)"
+            setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setText(prefs.getString("playlist_${slot}_epg", ""))
+        }
+
+        // На Android TV задаём явный маршрут фокуса для D-pad,
+        // чтобы переход вниз не перескакивал через поле EPG.
+        url.nextFocusDownId = epg.id
+        epg.nextFocusUpId = url.id
+        url.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (event.action == KeyEvent.ACTION_DOWN) epg.requestFocus()
+                true
+            } else false
+        }
+        epg.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                if (event.action == KeyEvent.ACTION_DOWN) url.requestFocus()
+                true
+            } else false
+        }
+        url.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_NEXT) {
+                epg.requestFocus()
+                true
+            } else false
+        }
+
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            addView(url, LinearLayout.LayoutParams(-1, dp(56)))
+            addView(epg, LinearLayout.LayoutParams(-1, dp(56)))
+        }
+        val editorDialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Настройка плейлиста $slot")
+            .setView(fields)
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Сохранить") { _, _ ->
                 val address = url.text.toString().trim()
                 prefs.edit().putString("playlist_${slot}_url", address).putString("playlist_${slot}_epg", epg.text.toString().trim()).apply()
                 if (address.startsWith("http://") || address.startsWith("https://")) {
@@ -2301,7 +2294,12 @@ class MainActivity : AppCompatActivity() {
                     prefs.edit().putInt("active_playlist_slot", slot).putString("playlist_url", address).putString("epg_url", epg.text.toString().trim()).apply()
                     fetchPlaylist(address, 0, false)
                 } else toast("Адрес плейлиста сохранён")
-            }.show()
+            }
+            .create()
+        editorDialog.setOnShowListener {
+            url.requestFocus()
+        }
+        editorDialog.show()
     }
 
     private fun showFavoritesSettings() {
@@ -2553,7 +2551,6 @@ class MainActivity : AppCompatActivity() {
                                         val item = ordered.removeAt(focusedIndex)
                                         ordered.add(target, item)
                                         focusedIndex = target
-                                        saveFavoriteOrder(ordered)
                                         renderRows(target)
                                     }
                                     true
@@ -2574,13 +2571,17 @@ class MainActivity : AppCompatActivity() {
         dialog.setCanceledOnTouchOutside(false)
         dialog.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                saveFavoriteOrder(ordered)
+                val json = JSONArray()
+                ordered.forEach { json.put(it.url) }
+                prefs.edit().putString(favoriteOrderKey(), json.toString()).apply()
                 dialog.dismiss()
                 true
             } else false
         }
         dialog.setOnDismissListener {
-            saveFavoriteOrder(ordered)
+            val json = JSONArray()
+            ordered.forEach { json.put(it.url) }
+            prefs.edit().putString(favoriteOrderKey(), json.toString()).apply()
         }
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
         dialog.show()
@@ -2723,24 +2724,6 @@ class MainActivity : AppCompatActivity() {
         minHeight = dp(54); setTextColor(-1)
         setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF202A3A.toInt()))
         setOnClickListener { action() }
-    }
-
-    private fun openHomeLauncherSettings(instruction: String) {
-        Toast.makeText(this, instruction, Toast.LENGTH_LONG).show()
-        val actions = listOf(
-            android.provider.Settings.ACTION_HOME_SETTINGS,
-            android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
-            android.provider.Settings.ACTION_SETTINGS
-        )
-        for (action in actions) {
-            try {
-                startActivity(Intent(action))
-                return
-            } catch (_: Exception) {
-                // На некоторых прошивках Android TV отдельный экран выбора HOME отсутствует.
-            }
-        }
-        Toast.makeText(this, "Не удалось открыть настройки главного экрана. Откройте их вручную в настройках приставки.", Toast.LENGTH_LONG).show()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
