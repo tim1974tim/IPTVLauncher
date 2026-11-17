@@ -284,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (playbackState == androidx.media3.common.Player.STATE_READY) {
                         playbackBar.visibility = View.VISIBLE
                         statusHandler.removeCallbacks(hideStatusRunnable)
-                        statusHandler.postDelayed(hideStatusRunnable, 3_000L)
+                        statusHandler.postDelayed(hideStatusRunnable, statusBarDurationMs())
                     }
                 }
             }
@@ -297,7 +297,7 @@ class MainActivity : AppCompatActivity() {
                     if (::playbackBar.isInitialized && !browserVisible) {
                         updatePlaybackBar()
                         statusHandler.removeCallbacks(hideStatusRunnable)
-                        statusHandler.postDelayed(hideStatusRunnable, 3_000L)
+                        statusHandler.postDelayed(hideStatusRunnable, statusBarDurationMs())
                     }
                 }
             }
@@ -876,7 +876,7 @@ class MainActivity : AppCompatActivity() {
         player.playWhenReady = true
         closeBrowser()
         updatePlaybackBar()
-        showPlaybackBarForThreeSeconds()
+        showPlaybackBarForConfiguredDuration()
     }
 
 
@@ -988,11 +988,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showPlaybackBarForThreeSeconds() {
+    private fun statusBarDurationMs(): Long =
+        prefs.getInt("status_bar_duration", 3).let { if (it in listOf(3, 5, 7)) it else 3 } * 1_000L
+
+    private fun showPlaybackBarForConfiguredDuration() {
         statusHandler.removeCallbacks(hideStatusRunnable)
         if (!browserVisible && channels.isNotEmpty()) {
             playbackBar.visibility = View.VISIBLE
-            if (!isChannelBuffering) statusHandler.postDelayed(hideStatusRunnable, 3_000L)
+            if (!isChannelBuffering) statusHandler.postDelayed(hideStatusRunnable, statusBarDurationMs())
         }
     }
 
@@ -1070,8 +1073,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
                         epgLoading = false
-                        showPlaybackBarForThreeSeconds()
-                        refreshProgrammeDetails()
+                                    refreshProgrammeDetails()
                     }
                 }
                 return@thread
@@ -1156,8 +1158,7 @@ class MainActivity : AppCompatActivity() {
                     epgProgressText = "Телепрограмма загружена и сохранена"
                     updatePlaybackBar()
                     refreshProgrammeDetails()
-                    showPlaybackBarForThreeSeconds()
-                    toast("EPG обновлён: ${programmes.size} передач")
+                            toast("EPG обновлён: ${programmes.size} передач")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -1166,8 +1167,7 @@ class MainActivity : AppCompatActivity() {
                     epgProgressText = if (cacheExists) "Не удалось обновить EPG; используется сохранённая копия" else "Ошибка загрузки телепрограммы"
                     updatePlaybackBar()
                     refreshProgrammeDetails()
-                    showPlaybackBarForThreeSeconds()
-                    toast(if (cacheExists) "Не удалось обновить EPG: ${e.message ?: "ошибка"}. Оставлена старая телепрограмма" else "Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
+                            toast(if (cacheExists) "Не удалось обновить EPG: ${e.message ?: "ошибка"}. Оставлена старая телепрограмма" else "Не удалось загрузить EPG: ${e.message ?: "ошибка"}")
                 }
             } finally {
                 epgRequestInProgress = false
@@ -1472,8 +1472,7 @@ class MainActivity : AppCompatActivity() {
                     if (okLongPressTriggered) { okLongPressTriggered = false; return true }
                     if (!prefs.getBoolean("back_opens_browser", true)) {
                         updatePlaybackBar()
-                        showPlaybackBarForThreeSeconds()
-                    }
+                                }
                     return true
                 }
             }
@@ -1547,8 +1546,7 @@ class MainActivity : AppCompatActivity() {
                         // При выключенной опции BACK не закрывает приложение:
                         // показываем статус-бар поверх эфира на 3 секунды.
                         updatePlaybackBar()
-                        showPlaybackBarForThreeSeconds()
-                        return true
+                                    return true
                     }
                 }
                 return super.dispatchKeyEvent(event)
@@ -1959,8 +1957,8 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, dp(14), 0, dp(7))
             })
         }
-        fun settingButton(title: String, selected: Boolean = false, onClick: () -> Unit) {
-            settings.addView(Button(this).apply {
+        fun settingButton(title: String, selected: Boolean = false, onClick: () -> Unit): Button {
+            val button = Button(this).apply {
                 text = title
                 isAllCaps = false
                 textSize = 14f
@@ -1973,7 +1971,9 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFE5EAF2.toInt())
                 applyFocusStyle(this, selected)
                 setOnClickListener { onClick(); refreshPreview() }
-            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+            }
+            settings.addView(button, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+            return button
         }
 
         section("РАЗМЕР СТАТУС-БАРА")
@@ -1985,6 +1985,35 @@ class MainActivity : AppCompatActivity() {
         }
         settingButton("Компактный  ·  50%", statusSizeScale() == 0.5f) {
             prefs.edit().putString("status_size", "small").apply(); applyStatusAppearance()
+        }
+
+        val currentStatusDuration = prefs.getInt("status_bar_duration", 3)
+            .takeIf { it in listOf(3, 5, 7) } ?: 3
+        section("ВРЕМЯ ПОКАЗА СТАТУС-БАРА")
+        lateinit var duration3Button: Button
+        lateinit var duration5Button: Button
+        lateinit var duration7Button: Button
+        fun refreshDurationSelection(selectedSeconds: Int) {
+            listOf(3 to duration3Button, 5 to duration5Button, 7 to duration7Button).forEach { (seconds, button) ->
+                val selected = seconds == selectedSeconds
+                button.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFE5EAF2.toInt())
+                applyFocusStyle(button, selected)
+            }
+        }
+        duration3Button = settingButton("3 секунды", currentStatusDuration == 3) {
+            prefs.edit().putInt("status_bar_duration", 3).apply()
+            refreshDurationSelection(3)
+            toast("Время показа статус-бара: 3 сек.")
+        }
+        duration5Button = settingButton("5 секунд", currentStatusDuration == 5) {
+            prefs.edit().putInt("status_bar_duration", 5).apply()
+            refreshDurationSelection(5)
+            toast("Время показа статус-бара: 5 сек.")
+        }
+        duration7Button = settingButton("7 секунд", currentStatusDuration == 7) {
+            prefs.edit().putInt("status_bar_duration", 7).apply()
+            refreshDurationSelection(7)
+            toast("Время показа статус-бара: 7 сек.")
         }
 
         section("ПРОЗРАЧНОСТЬ  ·  ${statusAlpha()}%")
@@ -2687,7 +2716,6 @@ class MainActivity : AppCompatActivity() {
         } else if (channels.isNotEmpty()) {
             // При выключенной опции BACK оставляет эфир и показывает статус-бар 3 секунды.
             updatePlaybackBar()
-            showPlaybackBarForThreeSeconds()
         } else {
             super.onBackPressed()
         }
